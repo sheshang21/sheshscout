@@ -199,40 +199,114 @@ details.advanced summary {
 .results-table tbody tr:hover { background: var(--surface-raised); }
 .results-table tr.detail-row td { padding: 0; border-bottom: 1px solid var(--border); }
 
+.table-scroll { overflow-x: auto; }
+.results-table th, .results-table td { white-space: nowrap; }
+.sticky-col {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+.results-table tbody tr:hover .sticky-col { background: var(--surface-raised); }
+.text-faint { color: var(--text-faint); font-size: 11px; }
+
+/* ── Stats bar ───────────────────────────────────────────────────── */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.stat-cell { text-align: center; }
+.stat-cell label { font-size: 10px; margin-bottom: 4px; }
+.stat-cell span { display: block; font-family: var(--font-mono); font-size: 18px; font-weight: 600; }
+.stat-cell.gain span { color: var(--gain); }
+.stat-cell.loss span { color: var(--loss); }
+
+/* ── Filters ─────────────────────────────────────────────────────── */
+.filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.filter-group label { margin-bottom: 6px; }
+.filter-group select, .filter-group input[type="number"] { width: auto; min-width: 120px; }
+.pill-row { display: flex; flex-wrap: wrap; gap: 6px; max-width: 420px; }
+.pill {
+  font-size: 11px;
+  padding: 4px 9px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-faint);
+}
+.pill.on { color: var(--text); border-color: var(--accent-dim); background: var(--surface); }
+
+/* ── Detail panel ────────────────────────────────────────────────── */
 .detail-panel {
   background: var(--surface-raised);
-  padding: 14px 18px;
+  padding: 16px 18px;
   font-size: 13px;
 }
-.detail-grid {
+.section-label {
+  display: block;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin: 16px 0 8px;
+}
+.section-label:first-child { margin-top: 0; }
+.metric-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 10px 18px;
-  margin-bottom: 12px;
 }
-.detail-grid > div { font-family: var(--font-mono); }
-.detail-grid label {
+.metric-row > div { font-family: var(--font-mono); }
+.metric-row label {
   display: block;
   font-family: var(--font-body);
   margin-bottom: 2px;
 }
+.metric-big { font-size: 16px; font-weight: 600; }
+
 .operator-warning {
   color: var(--loss);
   font-size: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   padding: 8px 10px;
   border: 1px solid var(--loss);
   border-radius: 6px;
 }
 .operator-warning ul { margin: 6px 0 0; padding-left: 18px; }
-.criteria-list label {
-  text-transform: uppercase;
+
+/* ── Historical charts (dependency-free SVG) ────────────────────── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.chart-block label {
+  display: block;
   font-size: 11px;
+  text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-dim);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
-.criteria-list ul {
+.mini-chart { width: 100%; height: auto; }
+.chart-label { font-family: var(--font-mono); font-size: 9px; fill: var(--text); }
+.chart-axis { font-family: var(--font-body); font-size: 9px; fill: var(--text-dim); }
+
+/* ── Score breakdown ─────────────────────────────────────────────── */
+.criteria-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -242,6 +316,11 @@ details.advanced summary {
   font-size: 12px;
 }
 .criteria-list li { break-inside: avoid; padding: 2px 0; }
+.criteria-list li.crit-good { color: var(--gain); }
+.criteria-list li.crit-warn { color: var(--accent); }
+.criteria-list li.crit-bad { color: var(--text-dim); }
+.criteria-list li.crit-danger { color: var(--loss); font-weight: 600; }
+
 .text-dim { color: var(--text-dim); }
 
 .empty-state {
