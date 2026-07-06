@@ -1,0 +1,24 @@
+# Server-side stack: Postgres + Redis (step 2), auth + API skeleton (step 3),
+# Celery task queue (step 5). Kept separate from requirements.txt (the
+# Streamlit app's own deps) so that app hasn't changed and doesn't need to
+# install any of this.
+
+-r requirements-core.txt  # pandas/numpy/yfinance/curl_cffi -- core/scanner.py's actual deps
+
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
+redis>=5.0.0
+python-dotenv>=1.0.0
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+argon2-cffi>=23.1.0
+email-validator>=2.1.0
+httpx>=0.27.0  # used by FastAPI's TestClient for the auth flow tests
+
+pytest>=8.0.0
+numpy>=1.26.0  # tests/test_scans.py builds synthetic OHLCV data
+
+celery>=5.3.0
+

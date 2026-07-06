@@ -1,0 +1,42 @@
+# docker-compose.dev.yml — Postgres + Redis only.
+#
+# This is deliberately NOT the full stack. Step 7 (deploy) will add web,
+# worker, and a reverse proxy in front of all of this. For now this just
+# gives you the two stateful services to point DATABASE_URL / REDIS_URL at
+# while building steps 3-5 locally.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#   export DATABASE_URL="postgresql+psycopg2://stockscout:stockscout@localhost:5432/stockscout"
+#   export REDIS_URL="redis://localhost:6379/0"
+#   python -m alembic upgrade head
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: stockscout
+      POSTGRES_PASSWORD: stockscout
+      POSTGRES_DB: stockscout
+    ports:
+      - "5432:5432"
+    volumes:
+      - stockscout_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stockscout"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  stockscout_pg_data:

@@ -1,0 +1,118 @@
+# docker-compose.yml — full production stack.
+#
+# Distinct from docker-compose.dev.yml (which is just Postgres + Redis,
+# for running the API/worker directly on your machine while developing).
+# This file is the real deployment shape from the architecture diagram:
+# browser -> Caddy (edge) -> FastAPI (web) / Celery (worker) -> Postgres + Redis.
+#
+# Usage:
+#   cp .env.example .env      # fill in DOMAIN, a real POSTGRES_PASSWORD, etc.
+#   docker compose up -d --build
+#
+# NOTE ON TESTING: everything in this file was designed to match what was
+# already proven piece-by-piece in earlier steps (real Postgres, real
+# Redis, a real separate Celery worker process, a real Caddy-style
+# same-origin frontend+API split) -- but this exact compose file itself
+# could not be run end-to-end in the sandbox this was built in (no Docker
+# daemon available there). Treat it as carefully written and internally
+# consistent, not as something already proven to boot on the first try --
+# run `docker compose up` yourself and check `docker compose logs` if
+# anything doesn't come up clean.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stockscout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stockscout}
+      POSTGRES_DB: ${POSTGRES_DB:-stockscout}
+    volumes:
+      - stockscout_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stockscout}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # One-shot: applies Alembic migrations, then exits. `web` and `worker`
+  # wait for this to finish successfully before starting, so a fresh
+  # deploy never races the app against an un-migrated schema.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-stockscout}:${POSTGRES_PASSWORD:-stockscout}@postgres:5432/${POSTGRES_DB:-stockscout}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-stockscout}:${POSTGRES_PASSWORD:-stockscout}@postgres:5432/${POSTGRES_DB:-stockscout}
+      REDIS_URL: redis://redis:6379/0
+      COOKIE_SECURE: "true"   # real deploy is behind HTTPS via Caddy -- see Caddyfile
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-1209600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-stockscout}:${POSTGRES_PASSWORD:-stockscout}@postgres:5432/${POSTGRES_DB:-stockscout}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Scale this up as usage grows: `docker compose up -d --scale worker=3`.
+    # All replicas share the same Redis-backed rate limiter/cache (step 5),
+    # so adding workers doesn't risk hammering Yahoo harder.
+
+  edge:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  stockscout_pg_data:
+  caddy_data:
+  caddy_config:

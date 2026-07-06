@@ -1,0 +1,43 @@
+# Caddyfile — single edge for the whole app.
+#
+# Frontend and API share ONE origin here (unlike local dev, where Vite on
+# :5173 talks to uvicorn on :8000 as two different origins and needs
+# CORS -- see app/main.py). That's the whole point of putting Caddy in
+# front: the browser only ever talks to https://{$DOMAIN}, Caddy decides
+# per-path whether that means "serve a static file" or "proxy to the web
+# service" -- and because it's one origin, the session cookie just works,
+# no CORS configuration needed in production at all.
+#
+# {$DOMAIN} defaults to localhost for local docker-compose testing (plain
+# HTTP, no cert). Set a real DOMAIN env var (e.g. stockscout.example.com)
+# in production and Caddy automatically provisions and renews a Let's
+# Encrypt certificate for it -- no other config change needed.
+
+{$DOMAIN:localhost} {
+	encode gzip
+
+	handle /auth/* {
+		reverse_proxy web:8000
+	}
+
+	handle /scans/* {
+		reverse_proxy web:8000 {
+			# SSE (GET /scans/{id}/events) is a long-lived streaming response --
+			# make sure Caddy doesn't buffer it into one big chunk at the end.
+			flush_interval -1
+		}
+	}
+
+	handle /health {
+		reverse_proxy web:8000
+	}
+
+	# Everything else: the built React app. try_files falls back to
+	# index.html for any path that isn't a real static asset, so client-side
+	# navigation (e.g. a refresh on a deep link) doesn't 404 at the edge.
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}
