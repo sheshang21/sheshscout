@@ -955,45 +955,55 @@ def analyze_stock(data, min_market_cap, thresholds=None):
         elif 1.8 < vol <= 2.2:
             score += 12
             criteria.append(f'✅ Volume: Building interest ({vol:.1f}x) [12 pts]')
-        elif 2.2 < vol <= 3.0:
-            score += 8
-            criteria.append(f'⚠ Volume: Elevated ({vol:.1f}x) [8 pts]')
-        elif vol > 5.0:
-            criteria.append(f'❌ Volume: Suspicious spike ({vol:.1f}x) [0 pts]')
-        else:
-            score += 3
-            criteria.append(f'⚠ Volume: Normal ({vol:.1f}x) [3 pts]')
-
-        # 11. TREND (10 pts)
-        if trend == 'Strong Uptrend':
-            score += 10
-            criteria.append(f'✅ Trend: Strong Uptrend [10 pts]')
-        elif trend == 'Uptrend':
+        elif vol > 2.8:
+            score += 5
+            criteria.append(f'⚠ Volume: Too high ({vol:.1f}x) [5 pts]')
+        elif 1.0 <= vol < 1.3:
             score += 7
-            criteria.append(f'✅ Trend: Uptrend [7 pts]')
-        elif trend == 'Sideways':
-            score += 4
-            criteria.append(f'⚠ Trend: Sideways [4 pts]')
+            criteria.append(f'⚠ Volume: Average ({vol:.1f}x) [7 pts]')
         else:
-            criteria.append(f'❌ Trend: Downtrend [0 pts]')
+            criteria.append(f'❌ Volume: Too low ({vol:.1f}x) [0 pts]')
 
-        # 12. WEEKLY MOMENTUM already scored above via consolidation
-
-        # 13. MONTHLY MOMENTUM (10 pts)
-        if 3 <= monthly_change <= 12:
+        # 11. TODAY'S PRICE (10 pts)
+        if -1.5 <= change <= 0.3:
             score += 10
-            criteria.append(f'✅ Monthly: Healthy rise ({monthly_change:+.1f}%) [10 pts]')
-        elif 0 <= monthly_change < 3:
-            score += 6
-            criteria.append(f'⚠ Monthly: Flat/early ({monthly_change:+.1f}%) [6 pts]')
-        elif monthly_change > 20:
-            criteria.append(f'❌ Monthly: Overextended ({monthly_change:+.1f}%) [0 pts]')
+            criteria.append(f'✅ Today: Perfect entry ({change:+.1f}%) [10 pts]')
+        elif 0.3 < change <= 1.2:
+            score += 8
+            criteria.append(f'✅ Today: Early move ({change:+.1f}%) [8 pts]')
+        elif -2.5 <= change < -1.5:
+            score += 7
+            criteria.append(f'⚠ Today: Dip ({change:+.1f}%) [7 pts]')
+        elif change > 2.5:
+            criteria.append(f'❌ Today: Already rallied ({change:+.1f}%) [0 pts]')
+        else:
+            score += 4
+            criteria.append(f'⚠ Today: Moderate ({change:+.1f}%) [4 pts]')
+
+        # 12. MONTHLY TREND (10 pts)
+        if -8 <= monthly_change <= -2:
+            score += 10
+            criteria.append(f'✅ Monthly: Recovering from dip ({monthly_change:+.1f}%) [10 pts]')
+        elif -2 < monthly_change <= 2:
+            score += 8
+            criteria.append(f'✅ Monthly: Base building ({monthly_change:+.1f}%) [8 pts]')
+        elif 2 < monthly_change <= 6:
+            score += 5
+            criteria.append(f'⚠ Monthly: Moderate gain ({monthly_change:+.1f}%) [5 pts]')
+        elif monthly_change > 10:
+            criteria.append(f'❌ Monthly: Extended ({monthly_change:+.1f}%) [0 pts]')
         else:
             score += 3
             criteria.append(f'⚠ Monthly: Weak ({monthly_change:+.1f}%) [3 pts]')
 
-        # 3-Month momentum
-        if 8 <= three_month_change <= 25:
+        # 13. 3-MONTH PERFORMANCE (10 pts)
+        if -15 <= three_month_change <= -5:
+            score += 10
+            criteria.append(f'✅ 3-Month: Perfect correction ({three_month_change:+.1f}%) [10 pts]')
+        elif -5 < three_month_change <= 5:
+            score += 8
+            criteria.append(f'✅ 3-Month: Sideways base ({three_month_change:+.1f}%) [8 pts]')
+        elif 5 < three_month_change <= 15:
             score += 5
             criteria.append(f'⚠ 3-Month: Moderate rise ({three_month_change:+.1f}%) [5 pts]')
         elif three_month_change > 25:
