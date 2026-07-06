@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { api } from '../api';
 
 const RATING_ORDER = ['Exceptional Buy', 'Prime Buy', 'Excellent Buy', 'Strong Buy', 'Good Buy', 'Watchlist', 'Skip', 'Operated - Avoid'];
@@ -22,6 +23,48 @@ function exchangeOf(symbol) {
   if (symbol?.endsWith('.NS')) return 'NSE';
   if (symbol?.endsWith('.BO')) return 'BSE';
   return 'N/A';
+}
+
+/* Flattens a result row to the same column set/order as the original
+   Streamlit dataframe, for Excel export. */
+function toExportRow(r) {
+  const raw = r.raw_result || {};
+  return {
+    Symbol: r.symbol,
+    Exchange: exchangeOf(r.symbol),
+    'Price (₹)': raw.price ?? null,
+    'Today (%)': raw.change ?? null,
+    'Weekly (%)': raw.weekly_change ?? null,
+    'Monthly (%)': raw.monthly_change ?? null,
+    '3M (%)': raw.three_month_change ?? null,
+    'Market Cap (₹Cr)': raw.market_cap ?? null,
+    'Cash on Hand (₹Cr)': raw.total_cash ? raw.total_cash / 10000000 : null,
+    'Cash/MCap (%)': raw.cash_on_hand_to_mcap ?? null,
+    'LatestFY Rev/MCap': raw.latest_fy_revenue_to_mcap ?? null,
+    'Rev YoY (%)': raw.yoy_revenue_growth ?? null,
+    'Rev QoQ (%)': raw.qoq_revenue_growth ?? null,
+    'Profit YoY (%)': raw.yoy_profit_growth ?? null,
+    'Profit QoQ (%)': raw.qoq_profit_growth ?? null,
+    'Margin (%)': raw.profit_margin ?? null,
+    RSI: raw.rsi ?? null,
+    MACD: raw.macd ?? null,
+    'BB (%)': raw.bb ?? null,
+    'Vol (x)': raw.vol ?? null,
+    'Upside (%)': raw.potential_pct ?? null,
+    Score: r.score ?? null,
+    Rating: r.rating,
+    Status: raw.status ?? null,
+    Sector: r.sector,
+    Operated: raw.is_operated ? 'YES' : 'Safe',
+    Risk: raw.operator_risk ?? null,
+  };
+}
+
+function exportToExcel(rows, filename) {
+  const ws = XLSX.utils.json_to_sheet(rows.map(toExportRow));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Results');
+  XLSX.writeFile(wb, filename);
 }
 
 /* ── Tiny dependency-free SVG bar/line charts, styled to match the app's
@@ -164,17 +207,19 @@ function StatsBar({ results }) {
 
   if (results.length === 0) return null;
 
+  const pct = stats.total ? ((stats.qualified / stats.total) * 100).toFixed(1) : '0.0';
+
   return (
-    <div className="stats-bar">
-      <div className="stat-cell"><label>Total</label><span>{stats.total}</span></div>
-      <div className="stat-cell loss"><label>🚨 Operated</label><span>{stats.operated}</span></div>
-      <div className="stat-cell"><label>🌟 Exceptional</label><span>{stats.byRating['Exceptional Buy']}</span></div>
-      <div className="stat-cell"><label>🚀 Prime</label><span>{stats.byRating['Prime Buy']}</span></div>
-      <div className="stat-cell"><label>💎 Excellent</label><span>{stats.byRating['Excellent Buy']}</span></div>
-      <div className="stat-cell"><label>✅ Strong</label><span>{stats.byRating['Strong Buy']}</span></div>
-      <div className="stat-cell"><label>NSE</label><span>{stats.nse}</span></div>
-      <div className="stat-cell"><label>BSE</label><span>{stats.bse}</span></div>
-      <div className="stat-cell gain"><label>Qualified</label><span>{stats.qualified} ({stats.total ? ((stats.qualified / stats.total) * 100).toFixed(1) : '0'}%)</span></div>
+    <div className="stats-bar mono">
+      <span>Total <b>{stats.total}</b></span>
+      <span className="loss">Operated <b>{stats.operated}</b></span>
+      <span>Exceptional <b>{stats.byRating['Exceptional Buy']}</b></span>
+      <span>Prime <b>{stats.byRating['Prime Buy']}</b></span>
+      <span>Excellent <b>{stats.byRating['Excellent Buy']}</b></span>
+      <span>Strong <b>{stats.byRating['Strong Buy']}</b></span>
+      <span>NSE <b>{stats.nse}</b></span>
+      <span>BSE <b>{stats.bse}</b></span>
+      <span className="gain">Qualified <b>{stats.qualified}</b> ({pct}%)</span>
     </div>
   );
 }
@@ -189,6 +234,7 @@ export default function ResultsTable({ jobId, refreshKey }) {
 
   const [ratingFilter, setRatingFilter] = useState(new Set(RATING_ORDER));
   const [exchangeFilter, setExchangeFilter] = useState(new Set(['NSE', 'BSE']));
+  const [safetyFilter, setSafetyFilter] = useState(new Set(['Safe', 'Operated']));
   const [sectorFilter, setSectorFilter] = useState(null); // null = all
   const [minScore, setMinScore] = useState(0);
 
@@ -205,10 +251,11 @@ export default function ResultsTable({ jobId, refreshKey }) {
     return results.filter((r) =>
       ratingFilter.has(r.rating) &&
       exchangeFilter.has(exchangeOf(r.symbol)) &&
+      safetyFilter.has(r.raw_result?.is_operated ? 'Operated' : 'Safe') &&
       (sectorFilter == null || sectorFilter.has(r.sector)) &&
       (r.score ?? 0) >= minScore
     );
-  }, [results, ratingFilter, exchangeFilter, sectorFilter, minScore]);
+  }, [results, ratingFilter, exchangeFilter, safetyFilter, sectorFilter, minScore]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -258,37 +305,74 @@ export default function ResultsTable({ jobId, refreshKey }) {
       <StatsBar results={results} />
 
       {results.length > 0 && (
-        <div className="filters-bar">
-          <div className="filter-group">
-            <label>Rating</label>
-            <div className="pill-row">
+        <details className="advanced" open>
+          <summary>Filters</summary>
+          <div className="filters-bar">
+            <div className="filter-group">
+              <label>Rating</label>
               {RATING_ORDER.map((rt) => (
-                <button key={rt} className={`pill ${ratingFilter.has(rt) ? 'on' : ''}`}
-                  onClick={() => toggleSetValue(setRatingFilter, ratingFilter, rt)}>{rt}</button>
+                <div className="checkbox-row" key={rt}>
+                  <input id={`flt-rating-${rt}`} type="checkbox" checked={ratingFilter.has(rt)}
+                    onChange={() => toggleSetValue(setRatingFilter, ratingFilter, rt)} />
+                  <label htmlFor={`flt-rating-${rt}`}>{rt}</label>
+                </div>
               ))}
             </div>
-          </div>
-          <div className="filter-group">
-            <label>Exchange</label>
-            <div className="pill-row">
+            <div className="filter-group">
+              <label>Exchange</label>
               {['NSE', 'BSE'].map((ex) => (
-                <button key={ex} className={`pill ${exchangeFilter.has(ex) ? 'on' : ''}`}
-                  onClick={() => toggleSetValue(setExchangeFilter, exchangeFilter, ex)}>{ex}</button>
+                <div className="checkbox-row" key={ex}>
+                  <input id={`flt-ex-${ex}`} type="checkbox" checked={exchangeFilter.has(ex)}
+                    onChange={() => toggleSetValue(setExchangeFilter, exchangeFilter, ex)} />
+                  <label htmlFor={`flt-ex-${ex}`}>{ex}</label>
+                </div>
               ))}
             </div>
+            <div className="filter-group">
+              <label>Safety</label>
+              {['Safe', 'Operated'].map((s) => (
+                <div className="checkbox-row" key={s}>
+                  <input id={`flt-safety-${s}`} type="checkbox" checked={safetyFilter.has(s)}
+                    onChange={() => toggleSetValue(setSafetyFilter, safetyFilter, s)} />
+                  <label htmlFor={`flt-safety-${s}`}>{s === 'Safe' ? '✅ Safe' : '🚨 Operated'}</label>
+                </div>
+              ))}
+            </div>
+            <div className="filter-group">
+              <label htmlFor="flt-sector">Sector</label>
+              <select id="flt-sector" value={sectorFilter ? [...sectorFilter][0] ?? '__all' : '__all'}
+                onChange={(e) => setSectorFilter(e.target.value === '__all' ? null : new Set([e.target.value]))}>
+                <option value="__all">All sectors</option>
+                {sectors.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="filter-group">
+              <label htmlFor="flt-minscore">Min score</label>
+              <input id="flt-minscore" type="number" min={0} max={250} step={10} value={minScore}
+                onChange={(e) => setMinScore(Number(e.target.value))} />
+            </div>
+            <div className="filter-group">
+              <label>&nbsp;</label>
+              <button type="button" onClick={() => {
+                setRatingFilter(new Set(RATING_ORDER));
+                setExchangeFilter(new Set(['NSE', 'BSE']));
+                setSafetyFilter(new Set(['Safe', 'Operated']));
+                setSectorFilter(null);
+                setMinScore(0);
+              }}>Reset filters</button>
+            </div>
           </div>
-          <div className="filter-group">
-            <label>Sector</label>
-            <select value={sectorFilter ? [...sectorFilter][0] ?? '__all' : '__all'}
-              onChange={(e) => setSectorFilter(e.target.value === '__all' ? null : new Set([e.target.value]))}>
-              <option value="__all">All sectors</option>
-              {sectors.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="filter-group">
-            <label>Min score</label>
-            <input type="number" min={0} max={250} step={10} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} />
-          </div>
+        </details>
+      )}
+
+      {results.length > 0 && (
+        <div className="export-row">
+          <button type="button" onClick={() => exportToExcel(sorted, `sheshscout-filtered-${jobId}.xlsx`)} disabled={sorted.length === 0}>
+            ⬇ Export filtered ({sorted.length})
+          </button>
+          <button type="button" onClick={() => exportToExcel(results, `sheshscout-all-${jobId}.xlsx`)} disabled={results.length === 0}>
+            ⬇ Export all loaded ({results.length})
+          </button>
         </div>
       )}
 
