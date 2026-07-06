@@ -14,7 +14,21 @@ function notifyDone(job) {
 
 export default function ScanProgress({ job, onUpdate }) {
   const [snapshot, setSnapshot] = useState(job);
+  const [stopping, setStopping] = useState(false);
   const notifiedRef = useRef(false);
+
+  async function handleStop() {
+    setStopping(true);
+    try {
+      const fresh = await api.cancelScan(job.id);
+      setSnapshot(fresh);
+      onUpdate?.(fresh);
+    } catch {
+      // ignore -- the poll loop / SSE stream will reflect the real state either way
+    } finally {
+      setStopping(false);
+    }
+  }
 
   useEffect(() => {
     setSnapshot(job);
@@ -67,6 +81,11 @@ export default function ScanProgress({ job, onUpdate }) {
           <span className="tick" key={snapshot.scanned_count}>{snapshot.scanned_count}</span>
           <span className="of"> / {snapshot.total_stocks}</span>
         </span>
+        {!TERMINAL_STATES.has(snapshot.status) && (
+          <button type="button" className="stop-scan-btn" onClick={handleStop} disabled={stopping}>
+            {stopping ? 'Stopping…' : '■ Stop scan'}
+          </button>
+        )}
       </div>
       <div className="progress-bar-track">
         <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
