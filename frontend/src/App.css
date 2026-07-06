@@ -210,44 +210,46 @@ details.advanced summary {
 .results-table tbody tr:hover .sticky-col { background: var(--surface-raised); }
 .text-faint { color: var(--text-faint); font-size: 11px; }
 
-/* ── Stats bar ───────────────────────────────────────────────────── */
+/* ── Stats bar — plain ledger strip, no card styling ────────────────── */
 .stats-bar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 10px;
-  margin-bottom: 16px;
-  padding: 14px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-dim);
 }
-.stat-cell { text-align: center; }
-.stat-cell label { font-size: 10px; margin-bottom: 4px; }
-.stat-cell span { display: block; font-family: var(--font-mono); font-size: 18px; font-weight: 600; }
-.stat-cell.gain span { color: var(--gain); }
-.stat-cell.loss span { color: var(--loss); }
+.stats-bar b { color: var(--text); font-weight: 600; }
+.stats-bar .gain, .stats-bar .loss { color: inherit; }
+.stats-bar .gain b { color: var(--gain); }
+.stats-bar .loss b { color: var(--loss); }
 
-/* ── Filters ─────────────────────────────────────────────────────── */
+/* ── Filters (reuses .advanced / .checkbox-row from ScanForm) ───────── */
 .filters-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 18px;
-  margin-bottom: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
+  gap: 20px 28px;
+  margin-top: 10px;
 }
-.filter-group label { margin-bottom: 6px; }
-.filter-group select, .filter-group input[type="number"] { width: auto; min-width: 120px; }
-.pill-row { display: flex; flex-wrap: wrap; gap: 6px; max-width: 420px; }
-.pill {
+.filter-group { min-width: 140px; }
+.filter-group > label:first-child {
   font-size: 11px;
-  padding: 4px 9px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
 }
-.pill.on { color: var(--text); border-color: var(--accent-dim); background: var(--surface); }
+.filter-group .checkbox-row { margin-bottom: 4px; }
+.filter-group select, .filter-group input[type="number"] { width: auto; min-width: 130px; }
+
+.export-row {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0;
+}
+.export-row button { font-size: 13px; }
 
 /* ── Detail panel ────────────────────────────────────────────────── */
 .detail-panel {
