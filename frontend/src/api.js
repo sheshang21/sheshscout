@@ -6,7 +6,11 @@
 // Vite (localhost:5173) and uvicorn (localhost:8000) are different ports,
 // set VITE_API_BASE=http://localhost:8000 in frontend/.env.local -- see
 // backend CORS setup in app/main.py for why that's still safe with cookies.
-const API_BASE = import.meta.env.VITE_API_BASE || '';
+//
+// Trailing slash is stripped defensively: VITE_API_BASE=".../"  plus a
+// path of "/auth/signup" would otherwise concatenate into "//auth/signup",
+// which FastAPI treats as a DIFFERENT path than "/auth/signup" and 404s.
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
 
 class ApiError extends Error {
   constructor(status, detail) {
