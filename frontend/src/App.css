@@ -85,15 +85,22 @@
 .dashboard {
   flex: 1;
   display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 20px;
-  padding: 24px;
-  max-width: 1200px;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+  padding: 24px 32px;
   width: 100%;
-  margin: 0 auto;
+  box-sizing: border-box;
 }
-@media (max-width: 800px) {
-  .dashboard { grid-template-columns: 1fr; }
+.dashboard .sidebar {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+@media (max-width: 900px) {
+  .dashboard { grid-template-columns: 1fr; padding: 16px; }
+  .dashboard .sidebar { position: static; max-height: none; }
 }
 
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
@@ -130,9 +137,18 @@ details.advanced summary {
 .progress-header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
+  gap: 12px;
   margin-bottom: 10px;
 }
+.stop-scan-btn {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--loss);
+  border-color: var(--loss);
+  background: transparent;
+}
+.stop-scan-btn:hover { background: var(--loss); color: var(--surface); }
 .progress-status {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -199,15 +215,31 @@ details.advanced summary {
 .results-table tbody tr:hover { background: var(--surface-raised); }
 .results-table tr.detail-row td { padding: 0; border-bottom: 1px solid var(--border); }
 
-.table-scroll { overflow-x: auto; }
+.table-scroll {
+  overflow: auto;
+  max-height: 72vh;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .results-table th, .results-table td { white-space: nowrap; }
+.results-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  z-index: 2;
+}
 .sticky-col {
   position: sticky;
   left: 0;
   background: var(--surface);
   z-index: 1;
 }
+.results-table thead th.sticky-col { z-index: 3; }
+.results-table tbody tr:nth-child(even) td { background: var(--surface-raised); }
+.results-table tbody tr:hover td { background: var(--accent-dim, var(--surface-raised)); }
 .results-table tbody tr:hover .sticky-col { background: var(--surface-raised); }
+.results-table td.num-cell, .results-table th.num-cell { text-align: right; font-variant-numeric: tabular-nums; }
+.results-table td.text-col { font-family: var(--font-body); }
 .text-faint { color: var(--text-faint); font-size: 11px; }
 
 /* ── Stats bar — plain ledger strip, no card styling ────────────────── */
