@@ -62,6 +62,12 @@ export const api = {
 
   resumeScan: (jobId) => request(`/scans/${jobId}/resume`, { method: 'POST' }),
 
+  cancelScan: (jobId) => request(`/scans/${jobId}/cancel`, { method: 'POST' }),
+
+  clearHistory: () => request('/scans', { method: 'DELETE' }),
+
+  universeCounts: () => request('/scans/universe/counts'),
+
   getHistory: (limit = 20) => request(`/scans?limit=${limit}`),
 
   // Not a fetch -- returns the raw URL for an EventSource (SSE), which
