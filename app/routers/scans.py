@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -27,6 +28,17 @@ from ..scan_runner import run_scan_job
 router = APIRouter(prefix="/scans", tags=["scans"])
 
 
+@router.get("/universe/counts")
+def universe_counts():
+    """Symbol counts per exchange, so the frontend can render Range Scan
+    bounds (e.g. 'NSE has 2143 stocks, pick rows 1-100') without
+    hardcoding numbers that drift as nse.txt/bse.txt change."""
+    return {
+        "NSE": len(load_universe(["NSE"])),
+        "BSE": len(load_universe(["BSE"])),
+    }
+
+
 def _get_owned_job(db: Session, job_id: UUID, user: User) -> ScanJob:
     """404 (not 403) if the job doesn't exist OR belongs to someone else —
     don't reveal that a given job_id exists at all to a non-owner."""
@@ -43,14 +55,32 @@ def start_scan(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    symbols = payload.symbols if payload.symbols else load_universe(payload.exchanges)
+    if payload.symbols:
+        symbols = payload.symbols
+    elif payload.range:
+        # Range Scan: slice each named exchange's universe to its 1-based
+        # From/To (inclusive), same semantics as the Streamlit app's Range
+        # Scan mode. An exchange with no entry in `range` is skipped even
+        # if it's in `exchanges`.
+        symbols = []
+        for exch, bounds in payload.range.items():
+            if len(bounds) != 2:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Range for {exch} must be [from, to]")
+            frm, to = bounds
+            exch_universe = load_universe([exch])
+            if frm < 1 or frm > to:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Invalid range for {exch}: {frm}-{to}")
+            symbols.extend(exch_universe[frm - 1:to])
+    else:
+        symbols = load_universe(payload.exchanges)
+
     if not symbols:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Resolved symbol list is empty")
 
     job = ScanJob(
         user_id=current_user.id,
         status=ScanJobStatus.pending,
-        universe={"exchanges": payload.exchanges, "symbols": payload.symbols},
+        universe={"exchanges": payload.exchanges, "range": payload.range, "symbols": payload.symbols},
         thresholds=payload.thresholds,
         min_market_cap=payload.min_market_cap,
         total_stocks=len(symbols),
@@ -145,6 +175,47 @@ def resume_scan(
     background_tasks.add_task(run_scan_job, str(job.id), remaining)
 
     return job
+
+
+@router.post("/{job_id}/cancel", response_model=ScanJobOut)
+def cancel_scan(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Request that a running/pending scan stop. Marks the job cancelled
+    immediately; scan_runner's poll loop (see app/scan_runner.py) notices
+    within POLL_INTERVAL_S and stops submitting/waiting on new work. Results
+    already written for symbols scanned so far are kept."""
+    job = _get_owned_job(db, job_id, current_user)
+
+    if job.status not in (ScanJobStatus.pending, ScanJobStatus.running):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Scan is not running")
+
+    job.status = ScanJobStatus.cancelled
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+def clear_history(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete every scan job (and cascaded results) owned by the current
+    user. Does not touch other users' jobs or the global dead_symbols table."""
+    running = (
+        db.query(ScanJob)
+        .filter(ScanJob.user_id == current_user.id, ScanJob.status == ScanJobStatus.running)
+        .count()
+    )
+    if running:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Stop the running scan before clearing history")
+
+    db.query(ScanJob).filter(ScanJob.user_id == current_user.id).delete(synchronize_session=False)
+    db.commit()
 
 
 @router.get("/{job_id}/events")
