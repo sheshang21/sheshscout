@@ -21,9 +21,12 @@ COPY requirements-core.txt requirements-server.txt ./
 RUN pip install --no-cache-dir -r requirements-server.txt
 
 COPY . .
+RUN chmod +x start-web.sh
 
 EXPOSE 8000
 
-# Default command runs the API; docker-compose.yml overrides this for
-# the `worker` service to run `celery -A app.celery_app worker` instead.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Runs the Alembic migration, then starts uvicorn -- see start-web.sh for
+# why this is a script rather than a shell one-liner typed into a "start
+# command" field somewhere (those don't reliably parse `&&`).
+# Binds to $PORT if set (Render's convention), else 8000 for local/compose use.
+CMD ["sh", "start-web.sh"]
