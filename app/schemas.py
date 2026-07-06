@@ -25,7 +25,13 @@ class UserOut(BaseModel):
 
 class ScanCreateRequest(BaseModel):
     exchanges: list[str] = Field(default=["NSE", "BSE"], description="Subset of NSE/BSE; ignored if symbols is set")
-    symbols: list[str] | None = Field(default=None, description="Explicit symbol list, overrides exchanges")
+    symbols: list[str] | None = Field(default=None, description="Explicit symbol list, overrides exchanges/range")
+    range: dict[str, list[int]] | None = Field(
+        default=None,
+        description="Optional per-exchange 1-based row range, e.g. {'NSE': [1, 100]}. "
+                    "Slices that exchange's universe (as loaded from nse.txt/bse.txt) "
+                    "to rows From..To inclusive. Ignored if symbols is set.",
+    )
     min_market_cap: float = Field(default=0, ge=0, description="Minimum market cap in crores")
     thresholds: dict[str, Any] | None = Field(default=None, description="Scoring thresholds; defaults used if omitted")
 
