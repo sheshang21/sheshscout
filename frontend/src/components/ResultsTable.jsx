@@ -389,7 +389,7 @@ export default function ResultsTable({ jobId, refreshKey }) {
               <tr>
                 <th className="sticky-col" onClick={() => toggleSort('symbol')}>Symbol{sortIndicator('symbol')}</th>
                 {columns.map(([key, label]) => (
-                  <th key={key} onClick={() => toggleSort(key)}>{label}{sortIndicator(key)}</th>
+                  <th key={key} className={key === 'rating' || key === 'sector' ? 'text-col' : 'num-cell'} onClick={() => toggleSort(key)}>{label}{sortIndicator(key)}</th>
                 ))}
               </tr>
             </thead>
@@ -401,28 +401,28 @@ export default function ResultsTable({ jobId, refreshKey }) {
                   <Fragment key={r.id}>
                     <tr className="clickable-row" onClick={() => setExpanded(isOpen ? null : r.id)}>
                       <td className="symbol-cell sticky-col">{r.symbol} <span className="text-faint">{exchangeOf(r.symbol)}</span></td>
-                      <td>{r.score?.toFixed(0)}</td>
-                      <td><RatingBadge rating={r.rating} /></td>
-                      <td>{r.sector}</td>
-                      <td>₹{num(raw.price)}</td>
-                      <td><Change value={raw.change} /></td>
-                      <td><Change value={raw.weekly_change} /></td>
-                      <td><Change value={raw.monthly_change} /></td>
-                      <td><Change value={raw.three_month_change} /></td>
-                      <td>₹{num(raw.market_cap, 0)}Cr</td>
-                      <td>{num(raw.cash_on_hand_to_mcap)}%</td>
-                      <td>{num(raw.latest_fy_revenue_to_mcap)}x</td>
-                      <td><Change value={raw.yoy_revenue_growth} digits={1} /></td>
-                      <td><Change value={raw.qoq_revenue_growth} digits={1} /></td>
-                      <td><Change value={raw.yoy_profit_growth} digits={1} /></td>
-                      <td><Change value={raw.qoq_profit_growth} digits={1} /></td>
-                      <td>{num(raw.profit_margin, 1)}%</td>
-                      <td>{num(raw.rsi, 0)}</td>
-                      <td>{num(raw.macd)}</td>
-                      <td>{num(raw.bb, 0)}%</td>
-                      <td>{num(raw.vol, 1)}x</td>
-                      <td>{num(raw.potential_pct, 1)}%</td>
-                      <td className={raw.is_operated ? 'loss' : raw.operator_risk >= 20 ? 'loss' : raw.operator_risk >= 12 ? '' : 'gain'}>
+                      <td className="num-cell">{r.score?.toFixed(0)}</td>
+                      <td className="text-col"><RatingBadge rating={r.rating} /></td>
+                      <td className="text-col">{r.sector}</td>
+                      <td className="num-cell">₹{num(raw.price)}</td>
+                      <td className="num-cell"><Change value={raw.change} /></td>
+                      <td className="num-cell"><Change value={raw.weekly_change} /></td>
+                      <td className="num-cell"><Change value={raw.monthly_change} /></td>
+                      <td className="num-cell"><Change value={raw.three_month_change} /></td>
+                      <td className="num-cell">₹{num(raw.market_cap, 0)}Cr</td>
+                      <td className="num-cell">{num(raw.cash_on_hand_to_mcap)}%</td>
+                      <td className="num-cell">{num(raw.latest_fy_revenue_to_mcap)}x</td>
+                      <td className="num-cell"><Change value={raw.yoy_revenue_growth} digits={1} /></td>
+                      <td className="num-cell"><Change value={raw.qoq_revenue_growth} digits={1} /></td>
+                      <td className="num-cell"><Change value={raw.yoy_profit_growth} digits={1} /></td>
+                      <td className="num-cell"><Change value={raw.qoq_profit_growth} digits={1} /></td>
+                      <td className="num-cell">{num(raw.profit_margin, 1)}%</td>
+                      <td className="num-cell">{num(raw.rsi, 0)}</td>
+                      <td className="num-cell">{num(raw.macd)}</td>
+                      <td className="num-cell">{num(raw.bb, 0)}%</td>
+                      <td className="num-cell">{num(raw.vol, 1)}x</td>
+                      <td className="num-cell">{num(raw.potential_pct, 1)}%</td>
+                      <td className={`num-cell ${raw.is_operated ? 'loss' : raw.operator_risk >= 20 ? 'loss' : raw.operator_risk >= 12 ? '' : 'gain'}`}>
                         {raw.is_operated ? '🚨' : raw.operator_risk ?? 0}
                       </td>
                     </tr>
