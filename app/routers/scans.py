@@ -2,7 +2,7 @@ import json
 import time
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,17 @@ from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
 from ..schemas import ScanCreateRequest, ScanJobOut, ScanResultOut
-from ..tasks import run_scan_job_task
+from ..scan_runner import run_scan_job
+
+# NOTE: Render's free tier only supports Web Services -- no Background
+# Worker service, so there's nowhere for a Celery worker to run and
+# `run_scan_job_task.delay(...)` jobs just sit in Redis forever, never
+# consumed (progress stuck at 0). Reverted to step 4's approach: FastAPI's
+# BackgroundTasks runs run_scan_job() in a worker thread of this same web
+# process. See app/scan_runner.py's docstring for the tradeoff (a big scan
+# shares CPU/threads with the web server -- fine for single-user/free-tier
+# use, not the "never blocks anyone else" guarantee Celery would give on a
+# paid plan with a real worker service).
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
@@ -29,6 +39,7 @@ def _get_owned_job(db: Session, job_id: UUID, user: User) -> ScanJob:
 @router.post("", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
 def start_scan(
     payload: ScanCreateRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -48,10 +59,7 @@ def start_scan(
     db.commit()
     db.refresh(job)
 
-    # Dispatched to a real Celery worker process (separate from the web
-    # server) as of step 5 -- see app/scan_runner.py's docstring for why
-    # this replaced FastAPI's BackgroundTasks from step 4.
-    run_scan_job_task.delay(str(job.id), symbols)
+    background_tasks.add_task(run_scan_job, str(job.id), symbols)
 
     return job
 
@@ -109,6 +117,7 @@ def scan_results(
 @router.post("/{job_id}/resume", response_model=ScanJobOut)
 def resume_scan(
     job_id: UUID,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -133,7 +142,7 @@ def resume_scan(
     job.error_message = None
     db.commit()
 
-    run_scan_job_task.delay(str(job.id), remaining)
+    background_tasks.add_task(run_scan_job, str(job.id), remaining)
 
     return job
 
