@@ -69,6 +69,7 @@ import os
 import random
 import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 import pandas as pd
@@ -108,6 +109,17 @@ MAX_RETRIES      = 3      # retry budget per call (was 5 -- see cooldown note be
 BASE_BACKOFF_S   = 3.0    # base for exponential backoff on 429
 CACHE_TTL_S      = 3600   # in-process cache TTL (1 hour)
 COOLDOWN_S       = 20.0   # shared pause applied to ALL threads/processes after any 429
+REQUEST_TIMEOUT_S = 15.0  # hard ceiling on any single HTTP call to Yahoo -- see
+                          # _make_session() below. Without this, a stalled/half-open
+                          # TCP connection blocks its worker thread FOREVER. With a
+                          # fixed-size ThreadPoolExecutor, enough of these pile up and
+                          # every worker ends up wedged on a dead socket at once --
+                          # the scan just stops advancing mid-run, at a different,
+                          # seemingly arbitrary stock count each time. This is the
+                          # actual root cause of scans "getting stuck" partway through
+                          # (e.g. around 80 or 130 tickers) -- never about which
+                          # ticker, always about how many stalled sockets happen to
+                          # accumulate before every worker thread is occupied.
 _CHROME_UA       = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -140,12 +152,29 @@ def _trigger_cooldown(seconds: float = COOLDOWN_S):
 # ────────────────────────────────────────────────────────────────────────────
 # SESSION FACTORY
 # ────────────────────────────────────────────────────────────────────────────
+_thread_local = threading.local()
+
 def _make_session():
     """
-    Return a curl_cffi Chrome-impersonation session (or a plain requests
-    session as fallback).  A fresh session is created each time so that
-    Yahoo can't track connection state across symbols.
+    Return a curl_cffi Chrome-impersonation session, cached per WORKER
+    THREAD (not per symbol -- that was the original design here, on the
+    theory that a fresh session per symbol stops Yahoo tracking connection
+    state across stocks). In practice, a real curl_cffi session is a live
+    libcurl handle with its own TLS/connection-pool buffers, and a scan
+    covering hundreds-to-thousands of symbols was creating that many of
+    them. Combined with the two caches above (also previously unbounded),
+    that's the actual cause of the process getting OOM-killed at a
+    consistent point in every scan on Render's 512MB free instance --
+    not a random hang. One session per thread (there are only
+    MAX_WORKERS of them, see app/scan_runner.py) bounds this to a small
+    constant no matter how large the scan is, while still rotating
+    identity across the handful of worker threads rather than reusing a
+    single session for literally everything.
     """
+    sess = getattr(_thread_local, "session", None)
+    if sess is not None:
+        return sess
+
     if _HAS_CURL:
         sess = _curl_requests.Session(impersonate="chrome124")
     else:
@@ -168,25 +197,49 @@ def _make_session():
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
     })
+
+    # ── enforce a default timeout on every request through this session ────
+    # yfinance calls session.get(...)/session.request(...) internally without
+    # ever passing a timeout, so a stalled connection to Yahoo just hangs the
+    # calling thread indefinitely -- no exception, nothing for _with_retry's
+    # try/except to catch, nothing for the ThreadPoolExecutor to notice.
+    # Wrapping .request() here so ANY call path (yfinance internals included)
+    # gets a real ceiling, without having to touch yfinance's own code.
+    _orig_request = sess.request
+
+    def _request_with_timeout(method, url, *args, **kwargs):
+        kwargs.setdefault("timeout", REQUEST_TIMEOUT_S)
+        return _orig_request(method, url, *args, **kwargs)
+
+    sess.request = _request_with_timeout
+    _thread_local.session = sess
     return sess
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # IN-PROCESS MEMORY CACHE  (survives across Streamlit reruns in same process)
 # ────────────────────────────────────────────────────────────────────────────
-_mem_cache: dict[str, tuple[float, Any]] = {}
+# Also previously unbounded -- holds the actual DataFrames per symbol per
+# property (history, financials, balance_sheet, ...), so a long scan grew
+# this right alongside _ticker_registry above. Same LRU cap treatment.
+_MEM_CACHE_MAX = 1000
+_mem_cache: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
 _cache_lock = threading.Lock()
 
 def _mem_get(key: str) -> Any | None:
     with _cache_lock:
         entry = _mem_cache.get(key)
         if entry and (time.time() - entry[0]) < CACHE_TTL_S:
+            _mem_cache.move_to_end(key)
             return entry[1]
     return None
 
 def _mem_set(key: str, value: Any):
     with _cache_lock:
         _mem_cache[key] = (time.time(), value)
+        _mem_cache.move_to_end(key)
+        while len(_mem_cache) > _MEM_CACHE_MAX:
+            _mem_cache.popitem(last=False)
 
 def clear_cache(symbol: str | None = None):
     """Clear in-process cache.  Pass symbol to clear only that ticker."""
@@ -328,15 +381,30 @@ class _CachedTicker:
 
 
 # -- module-level Ticker cache (one object per symbol per process) -----------
-_ticker_registry: dict[str, _CachedTicker] = {}
+# THIS WAS UNBOUNDED, AND IT'S THE REAL REASON THE PROCESS GETS OOM-KILLED AT
+# A CONSISTENT STOCK COUNT (not randomly): every symbol a scan ever touches
+# stays in this dict FOREVER (only a process restart clears it), and each
+# entry holds a live yf.Ticker object plus everything it's cached internally
+# (history, financials, balance sheet, cashflow DataFrames). A full-universe
+# scan never revisits the same symbol twice in one run, so none of this
+# caching does anything useful for that case -- it's pure accumulation.
+# Combined with the _mem_cache below (same problem, holds the actual
+# DataFrames a second time), this is what eats Render's 512MB ceiling
+# roughly N stocks into every scan. Bounded with real LRU eviction now --
+# capacity sized for "helps repeated lookups of the same symbol in a short
+# window" (dashboard refreshes, resume flows), not "hold the whole universe."
+_TICKER_REGISTRY_MAX = 200
+_ticker_registry: "OrderedDict[str, _CachedTicker]" = OrderedDict()
 _registry_lock   = threading.Lock()
 
 def safe_ticker(symbol: str) -> _CachedTicker:
     """
     Drop-in for yf.Ticker(symbol).
 
-    Returns a cached, rate-limit-aware wrapper.  The same object is
-    reused across all calls with the same symbol within a process.
+    Returns a cached, rate-limit-aware wrapper. The same object is reused
+    across calls with the same symbol within a short window; least-recently-
+    used symbols are evicted once _TICKER_REGISTRY_MAX is exceeded so a
+    long scan can't grow this without bound.
 
     Usage:
         from yf_ratelimit import safe_ticker
@@ -345,8 +413,13 @@ def safe_ticker(symbol: str) -> _CachedTicker:
         df = t.history(period="1y")
     """
     with _registry_lock:
-        if symbol not in _ticker_registry:
-            _ticker_registry[symbol] = _CachedTicker(symbol)
+        existing = _ticker_registry.get(symbol)
+        if existing is not None:
+            _ticker_registry.move_to_end(symbol)
+            return existing
+        _ticker_registry[symbol] = _CachedTicker(symbol)
+        while len(_ticker_registry) > _TICKER_REGISTRY_MAX:
+            _ticker_registry.popitem(last=False)
         return _ticker_registry[symbol]
 
 
