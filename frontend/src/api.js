@@ -57,8 +57,8 @@ export const api = {
 
   getScan: (jobId) => request(`/scans/${jobId}`),
 
-  getScanResults: (jobId, { qualifiedOnly = false, detailed = false } = {}) =>
-    request(`/scans/${jobId}/results?qualified_only=${qualifiedOnly}&detailed=${detailed}`),
+  getScanResults: (jobId, { qualifiedOnly = false, detailed = false, limit = 10000 } = {}) =>
+    request(`/scans/${jobId}/results?qualified_only=${qualifiedOnly}&detailed=${detailed}&limit=${limit}`),
 
   resumeScan: (jobId) => request(`/scans/${jobId}/resume`, { method: 'POST' }),
 
@@ -67,6 +67,8 @@ export const api = {
   clearHistory: () => request('/scans', { method: 'DELETE' }),
 
   universeCounts: () => request('/scans/universe/counts'),
+
+  getDebug: (jobId) => request(`/scans/${jobId}/debug`),
 
   getHistory: (limit = 20) => request(`/scans?limit=${limit}`),
 
