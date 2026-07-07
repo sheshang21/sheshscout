@@ -13,7 +13,7 @@ from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
 from ..schemas import ScanCreateRequest, ScanJobOut, ScanResultOut
-from ..scan_runner import run_scan_job
+from ..scan_runner import run_scan_job, get_debug_log
 
 # NOTE: Render's free tier only supports Web Services -- no Background
 # Worker service, so there's nowhere for a Celery worker to run and
@@ -153,8 +153,17 @@ def resume_scan(
 ):
     job = _get_owned_job(db, job_id, current_user)
 
-    if job.status == ScanJobStatus.running:
+    if job.status == ScanJobStatus.running and not job.is_stale:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Scan is already running")
+
+    if job.is_stale:
+        # The process that was running this job is gone (Render can restart
+        # a free web service at any time) but nothing ever got the chance to
+        # write status='failed'. Recognize that here instead of leaving the
+        # job unresumable/unstoppable forever.
+        job.status = ScanJobStatus.failed
+        job.error_message = (job.error_message or "") + " [orphaned: server restarted mid-scan]"
+        db.commit()
 
     full_universe = (job.universe or {}).get("symbols") or load_universe((job.universe or {}).get("exchanges"))
     already_scanned = {r.symbol for r in db.query(ScanResult.symbol).filter(ScanResult.scan_job_id == job.id).all()}
@@ -206,16 +215,42 @@ def clear_history(
 ):
     """Delete every scan job (and cascaded results) owned by the current
     user. Does not touch other users' jobs or the global dead_symbols table."""
-    running = (
+    running_jobs = (
         db.query(ScanJob)
         .filter(ScanJob.user_id == current_user.id, ScanJob.status == ScanJobStatus.running)
-        .count()
+        .all()
     )
-    if running:
+    # A job stuck at status='running' with a dead/stale heartbeat isn't
+    # actually active -- it's exactly the orphaned-by-a-restart case
+    # is_stale exists to catch (see db/models.py). Don't let it block
+    # clearing history forever; only a genuinely-live scan should.
+    genuinely_running = [j for j in running_jobs if not j.is_stale]
+    if genuinely_running:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Stop the running scan before clearing history")
 
     db.query(ScanJob).filter(ScanJob.user_id == current_user.id).delete(synchronize_session=False)
     db.commit()
+
+
+@router.get("/{job_id}/debug")
+def scan_debug(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Live 'what is this scan doing right now' feed for the collapsible
+    debug panel -- per-symbol outcomes, progress snapshots, and enough to
+    tell a genuinely-running scan apart from an orphaned one."""
+    job = _get_owned_job(db, job_id, current_user)
+    return {
+        "status": job.status,
+        "is_stale": job.is_stale,
+        "last_heartbeat": job.last_heartbeat,
+        "scanned_count": job.scanned_count,
+        "total_stocks": job.total_stocks,
+        "failed_count": job.failed_count,
+        "log": get_debug_log(str(job.id)),
+    }
 
 
 @router.get("/{job_id}/events")
@@ -248,6 +283,7 @@ def scan_events(
                     "total_stocks": job.total_stocks,
                     "scanned_count": job.scanned_count,
                     "failed_count": job.failed_count,
+                    "is_stale": job.is_stale,
                 }
                 if snapshot != last_snapshot:
                     yield f"data: {json.dumps(snapshot)}\n\n"
