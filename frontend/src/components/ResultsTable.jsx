@@ -224,7 +224,7 @@ function StatsBar({ results }) {
   );
 }
 
-export default function ResultsTable({ jobId, refreshKey }) {
+export default function ResultsTable({ jobId, refreshKey, live }) {
   const [results, setResults] = useState([]);
   const [qualifiedOnly, setQualifiedOnly] = useState(true);
   const [sortKey, setSortKey] = useState('score');
@@ -238,12 +238,35 @@ export default function ResultsTable({ jobId, refreshKey }) {
   const [sectorFilter, setSectorFilter] = useState(null); // null = all
   const [minScore, setMinScore] = useState(0);
 
+  // While a scan is actively running, nothing else in this component's
+  // dependency array changes on its own -- jobId is stable, qualifiedOnly
+  // only changes when the person clicks it, and refreshKey only bumps once
+  // the scan reaches a terminal state (see App.jsx). Without this, newly
+  // scored stocks just don't show up until the scan finishes (or someone
+  // happens to toggle the checkbox, which was the only thing forcing a
+  // refetch). `tick` gives the same effect a reason to re-run periodically
+  // while `live` is true.
+  const [tick, setTick] = useState(0);
+  useEffect(() => { setTick(0); }, [jobId]);
   useEffect(() => {
-    setLoading(true);
+    if (!live) return;
+    const id = setInterval(() => setTick((t) => t + 1), 4000);
+    return () => clearInterval(id);
+  }, [live, jobId]);
+
+  useEffect(() => {
+    const isBackgroundRefresh = tick > 0;
+    if (!isBackgroundRefresh) setLoading(true);
     api.getScanResults(jobId, { qualifiedOnly, detailed: true })
-      .then((r) => { setResults(r); setExpanded(null); })
+      .then((r) => {
+        setResults(r);
+        // Don't blow away an open detail row on a silent background
+        // refresh -- only reset it when the person actually changed a
+        // filter or switched jobs.
+        if (!isBackgroundRefresh) setExpanded(null);
+      })
       .finally(() => setLoading(false));
-  }, [jobId, qualifiedOnly, refreshKey]);
+  }, [jobId, qualifiedOnly, refreshKey, tick]);
 
   const sectors = useMemo(() => [...new Set(results.map((r) => r.sector).filter(Boolean))].sort(), [results]);
 
