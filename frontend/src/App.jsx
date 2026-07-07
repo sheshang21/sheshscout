@@ -63,7 +63,11 @@ export default function App() {
             {activeJob ? (
               <>
                 <ScanProgress job={activeJob} onUpdate={handleJobUpdate} />
-                <ResultsTable jobId={activeJob.id} refreshKey={resultsRefreshKey} />
+                <ResultsTable
+                  jobId={activeJob.id}
+                  refreshKey={resultsRefreshKey}
+                  live={activeJob.status === 'pending' || activeJob.status === 'running'}
+                />
               </>
             ) : (
               <div className="card empty-state">
