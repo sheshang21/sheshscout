@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { api } from '../api';
 
 const RATING_ORDER = ['Exceptional Buy', 'Prime Buy', 'Excellent Buy', 'Strong Buy', 'Good Buy', 'Watchlist', 'Skip', 'Operated - Avoid'];
@@ -65,6 +67,43 @@ function exportToExcel(rows, filename) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Results');
   XLSX.writeFile(wb, filename);
+}
+
+function exportToPDF(rows, filename, title) {
+  if (rows.length === 0) return;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  doc.setFontSize(13);
+  doc.text(title, 32, 28);
+  doc.setFontSize(8);
+  doc.setTextColor(120);
+  doc.text(`${rows.length} stocks · generated ${new Date().toLocaleString()}`, 32, 42);
+
+  const exportRows = rows.map(toExportRow);
+  const columns = Object.keys(exportRows[0]);
+  const body = exportRows.map((row) => columns.map((c) => {
+    const v = row[c];
+    if (v == null) return '—';
+    return typeof v === 'number' ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(v);
+  }));
+
+  autoTable(doc, {
+    startY: 52,
+    head: [columns],
+    body,
+    theme: 'grid',
+    styles: { fontSize: 6.5, cellPadding: 3, overflow: 'linebreak' },
+    headStyles: { fillColor: [25, 25, 28], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [245, 245, 247] },
+    margin: { left: 24, right: 24 },
+    didDrawPage: () => {
+      const pageCount = doc.internal.getNumberOfPages();
+      doc.setFontSize(7);
+      doc.setTextColor(150);
+      doc.text(`Page ${doc.internal.getCurrentPageInfo().pageNumber} of ${pageCount}`, doc.internal.pageSize.getWidth() - 70, doc.internal.pageSize.getHeight() - 12);
+    },
+  });
+
+  doc.save(filename);
 }
 
 /* ── Tiny dependency-free SVG bar/line charts, styled to match the app's
@@ -230,7 +269,15 @@ export default function ResultsTable({ jobId, refreshKey, live }) {
   const [sortKey, setSortKey] = useState('score');
   const [sortDir, setSortDir] = useState('desc');
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(null);
+  const [expanded, setExpanded] = useState(() => new Set());
+
+  function toggleExpanded(id) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   const [ratingFilter, setRatingFilter] = useState(new Set(RATING_ORDER));
   const [exchangeFilter, setExchangeFilter] = useState(new Set(['NSE', 'BSE']));
@@ -263,7 +310,7 @@ export default function ResultsTable({ jobId, refreshKey, live }) {
         // Don't blow away an open detail row on a silent background
         // refresh -- only reset it when the person actually changed a
         // filter or switched jobs.
-        if (!isBackgroundRefresh) setExpanded(null);
+        if (!isBackgroundRefresh) setExpanded(new Set());
       })
       .finally(() => setLoading(false));
   }, [jobId, qualifiedOnly, refreshKey, tick]);
@@ -390,11 +437,20 @@ export default function ResultsTable({ jobId, refreshKey, live }) {
 
       {results.length > 0 && (
         <div className="export-row">
+          <button type="button" onClick={() => setExpanded(new Set(sorted.map((r) => r.id)))} disabled={sorted.length === 0}>
+            ▾ Expand all
+          </button>
+          <button type="button" onClick={() => setExpanded(new Set())} disabled={expanded.size === 0}>
+            ▸ Collapse all
+          </button>
           <button type="button" onClick={() => exportToExcel(sorted, `sheshscout-filtered-${jobId}.xlsx`)} disabled={sorted.length === 0}>
             ⬇ Export filtered ({sorted.length})
           </button>
           <button type="button" onClick={() => exportToExcel(results, `sheshscout-all-${jobId}.xlsx`)} disabled={results.length === 0}>
             ⬇ Export all loaded ({results.length})
+          </button>
+          <button type="button" onClick={() => exportToPDF(sorted, `sheshscout-filtered-${jobId}.pdf`, 'SheshScout — Scan Results (filtered)')} disabled={sorted.length === 0}>
+            📄 Export PDF
           </button>
         </div>
       )}
@@ -419,10 +475,10 @@ export default function ResultsTable({ jobId, refreshKey, live }) {
             <tbody>
               {sorted.map((r) => {
                 const raw = r.raw_result || {};
-                const isOpen = expanded === r.id;
+                const isOpen = expanded.has(r.id);
                 return (
                   <Fragment key={r.id}>
-                    <tr className="clickable-row" onClick={() => setExpanded(isOpen ? null : r.id)}>
+                    <tr className="clickable-row" onClick={() => toggleExpanded(r.id)}>
                       <td className="symbol-cell sticky-col">{r.symbol} <span className="text-faint">{exchangeOf(r.symbol)}</span></td>
                       <td className="num-cell">{r.score?.toFixed(0)}</td>
                       <td className="text-col"><RatingBadge rating={r.rating} /></td>
