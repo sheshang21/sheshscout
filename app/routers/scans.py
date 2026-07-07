@@ -125,7 +125,7 @@ def scan_results(
     job_id: UUID,
     qualified_only: bool = Query(default=False),
     detailed: bool = Query(default=False, description="Include the full analyze_stock() breakdown per result"),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
