@@ -27,6 +27,7 @@ Design notes:
 """
 import enum
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer,
@@ -40,6 +41,13 @@ from .session import Base
 
 def _uuid_pk():
     return Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+
+# scan_runner writes a heartbeat roughly every POLL_INTERVAL_S (3s, see
+# app/scan_runner.py) plus however long one poll iteration takes to run.
+# This is a generous multiple of that so a worker that's just briefly slow
+# (GC pause, a slow yfinance call) isn't mistaken for a dead one.
+STALE_HEARTBEAT_S = 60
 
 
 class User(Base):
@@ -87,8 +95,28 @@ class ScanJob(Base):
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Written by scan_runner's poll loop every POLL_INTERVAL_S while a scan
+    # is actively being worked on. Its only purpose is letting is_stale
+    # (below) tell "genuinely running" apart from "stuck at status=running
+    # because the process died mid-scan" (Render can restart a free web
+    # service at any time, with no chance for anyone to write status='failed').
+    last_heartbeat = Column(DateTime(timezone=True), nullable=True)
+
     user = relationship("User", back_populates="scan_jobs")
     results = relationship("ScanResult", back_populates="scan_job", cascade="all, delete-orphan")
+
+    @property
+    def is_stale(self) -> bool:
+        """True when this job claims to be running but nothing has proven
+        a worker is still actually processing it. Only meaningful while
+        status == running: a pending job that hasn't started yet has no
+        heartbeat either, but that's not staleness, it just hasn't started."""
+        if self.status != ScanJobStatus.running:
+            return False
+        if self.last_heartbeat is None:
+            return True
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=STALE_HEARTBEAT_S)
+        return self.last_heartbeat < cutoff
 
 
 class ScanResult(Base):
