@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets as _secrets
 import time
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from auth.security import hash_password
 from auth.service import AccountLocked, EmailAlreadyRegistered, InvalidCredentials, authenticate, signup
-from auth.sessions import SESSION_TTL_SECONDS, create_session, delete_session
+from auth.sessions import SESSION_TTL_SECONDS, create_session, delete_session, get_user_id
 from db.models import User
 from db.session import get_db
 
@@ -19,6 +20,15 @@ from ..deps import SESSION_COOKIE_NAME, get_current_user
 from ..schemas import LoginRequest, SignupRequest, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_logger = logging.getLogger("uvicorn.error")
+_logger.info(
+    "Cookie config in effect: COOKIE_SECURE=%s COOKIE_SAMESITE=%s "
+    "(if SAMESITE isn't 'none' and this backend + frontend are on two "
+    "different onrender.com subdomains, cross-site requests will silently "
+    "drop the session cookie -- see DEPLOY.md)",
+    os.environ.get("COOKIE_SECURE", "true"), os.environ.get("COOKIE_SAMESITE", "lax"),
+)
 
 # Cookies need Secure=True in prod (HTTPS only) but that blocks the cookie
 # entirely over plain http during local dev — toggle via env, default safe (True).
@@ -47,6 +57,32 @@ def _set_session_cookie(response: Response, session_id: str) -> None:
         samesite=COOKIE_SAMESITE,  # "lax" for same-origin deploys, "none" for split frontend/API origins
         path="/",
     )
+
+
+@router.get("/_debug/cookie-config")
+def debug_cookie_config(
+    ss_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+):
+    """Temporary diagnostic, safe to leave in (no secrets exposed) or
+    delete later. Hit this directly in a browser tab pointed at the
+    BACKEND url (e.g. https://sheshscouting.onrender.com/auth/_debug/cookie-config)
+    right after logging in on the frontend:
+      - "cookie_received": true  -> the browser IS sending the session
+        cookie to this backend; a 401 elsewhere is a different bug (check
+        that endpoint's own logic), not a cookie-transmission problem.
+      - "cookie_received": false -> the browser is NOT attaching the
+        cookie to this request. Check "effective_samesite"/"effective_secure"
+        below actually say what you set on Render -- if they still show
+        defaults, the env vars didn't take effect on THIS service (wrong
+        service, needs a redeploy, or a typo in the var name).
+    """
+    return {
+        "cookie_received": ss_session is not None,
+        "session_valid": bool(get_user_id(ss_session)) if ss_session else False,
+        "effective_cookie_secure": COOKIE_SECURE,
+        "effective_cookie_samesite": COOKIE_SAMESITE,
+        "effective_frontend_origin_for_cors": os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173 (default -- not overridden!)"),
+    }
 
 
 @router.post("/signup", response_model=UserOut, status_code=status.HTTP_201_CREATED)
