@@ -51,7 +51,7 @@ export default function App() {
       </div>
 
       {view === 'history' ? (
-        <div className="dashboard" style={{ gridTemplateColumns: '1fr' }}>
+        <div className="dashboard">
           <History onSelect={(job) => { setActiveJob(job); setView('dashboard'); }} />
         </div>
       ) : (

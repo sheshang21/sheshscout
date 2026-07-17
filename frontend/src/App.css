@@ -81,29 +81,49 @@
   font-size: 13px;
 }
 
-/* ── Dashboard grid ──────────────────────────────────────────────── */
+/* ── Dashboard layout ────────────────────────────────────────────── */
+/* Was a 320px-sidebar + content grid, which is what forced the scan
+   controls into a cramped vertical column AND squeezed the results
+   table into whatever width was left. Now a single vertical stack:
+   controls run in a horizontal bar across the full width, table below
+   also gets the full width. */
 .dashboard {
   flex: 1;
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
   padding: 24px 32px;
   width: 100%;
   box-sizing: border-box;
 }
 .dashboard .sidebar {
-  position: sticky;
-  top: 24px;
-  align-self: start;
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-}
-@media (max-width: 900px) {
-  .dashboard { grid-template-columns: 1fr; padding: 16px; }
-  .dashboard .sidebar { position: static; max-height: none; }
+  width: 100%;
 }
 
 .sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+/* Scan setup form: fields run left-to-right and wrap, instead of
+   stacking one per line. */
+.scan-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 24px;
+}
+.scan-form > h3,
+.scan-form > .error-text,
+.scan-form > button[type="submit"],
+.scan-form > details.advanced {
+  flex: 1 1 100%; /* these still get their own full-width row */
+}
+.scan-form > button[type="submit"] { width: auto !important; max-width: 260px; }
+.scan-form .field-row {
+  flex: 1 1 200px;
+  min-width: 180px;
+  margin-bottom: 0;
+}
+.scan-form .field-row.grow { flex: 2 1 320px; }
+
 .field-row { margin-bottom: 14px; }
 .checkbox-row {
   display: flex;

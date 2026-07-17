@@ -1,29 +1,31 @@
 /* src/index.css — design tokens + global styles.
-   Direction: a financial terminal/ledger register, not a generic SaaS
-   dashboard. Ink-dark surface (not pure black), warm amber accent (the
-   color of a ticker readout, not the teal/cream or terracotta defaults),
-   muted gain/loss colors (not neon), monospace for anything numeric so
-   columns of scores and prices actually line up when scanning them.
+
+   Matches SheshAnalysis's visual theme (app/static/css/style.css) so the
+   whole product feels like one app: serif "ledger/document" look, paper
+   background, navy for actions/brand, gold used sparingly as a genuine
+   accent (top-tier rating badges), muted (not neon) gain/loss colors.
+   Numeric columns keep a monospace face so scores/prices still line up
+   when scanning a dense table -- that's a functional choice, not a
+   leftover from the old dark theme.
 */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
 :root {
-  --bg: #0f1115;
-  --surface: #171a21;
-  --surface-raised: #1e222b;
-  --border: #2a2e38;
-  --text: #e8e6e1;
-  --text-dim: #8b8f99;
-  --text-faint: #5a5e68;
-  --accent: #d4a24c;
-  --accent-dim: #7a6438;
-  --gain: #4fa37a;
-  --loss: #c15b4a;
+  --bg: #faf8f3;
+  --surface: #ffffff;
+  --surface-raised: #f0ede4;
+  --border: #d8d2c4;
+  --text: #1c1c1c;
+  --text-dim: #4a4a45;
+  --text-faint: #8c8a80;
+  --accent: #1f3a5f;       /* navy -- primary actions, links, focus */
+  --accent-dim: #16293f;   /* navy-dark -- hover state */
+  --gold: #a9812f;         /* used sparingly: top-tier rating badges only */
+  --gain: #1e6b3a;
+  --loss: #9c2b2b;
 
-  --font-display: 'Space Grotesk', system-ui, sans-serif;
-  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', 'SF Mono', monospace;
+  --font-display: var(--font-body);
+  --font-body: "Times New Roman", Times, Georgia, "Liberation Serif", serif;
+  --font-mono: "Courier New", Courier, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -37,16 +39,16 @@ html, body, #root {
 
 body {
   font-family: var(--font-body);
-  font-size: 15px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
+  font-size: 16px;
+  line-height: 1.55;
+  letter-spacing: 0.1px;
 }
 
 h1, h2, h3 {
   font-family: var(--font-display);
-  font-weight: 600;
+  font-weight: 700;
   margin: 0;
-  letter-spacing: -0.01em;
+  letter-spacing: 0.2px;
 }
 
 .mono { font-family: var(--font-mono); }
@@ -56,16 +58,16 @@ a { color: var(--accent); text-decoration: none; }
 button {
   font-family: var(--font-body);
   font-weight: 500;
-  font-size: 14px;
+  font-size: 15px;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: 3px;
   border: 1px solid var(--border);
   background: var(--surface-raised);
   color: var(--text);
   padding: 9px 16px;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
-button:hover:not(:disabled) { border-color: var(--accent-dim); }
+button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 2px solid var(--accent);
@@ -75,17 +77,17 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #1a1305;
-  font-weight: 600;
+  color: #ffffff;
+  font-weight: 700;
 }
-button.primary:hover:not(:disabled) { background: #e3b05e; }
+button.primary:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); }
 
-input, select {
+input, select, textarea {
   font-family: var(--font-body);
-  font-size: 14px;
-  background: var(--bg);
+  font-size: 15px;
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 3px;
   color: var(--text);
   padding: 8px 10px;
   width: 100%;
@@ -103,7 +105,8 @@ label {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   padding: 20px;
 }
 
@@ -131,8 +134,10 @@ label {
 }
 
 /* Rating badge -- top-tier ratings get a "stamped" treatment (subtle
-   inset shadow + rotation), evoking a certificate/ledger seal rather
-   than a generic colored chip. Ordinary ratings stay flat. */
+   inset shadow + rotation, in gold -- the one decorative accent color
+   SheshAnalysis itself uses, there for the navbar's bottom border),
+   evoking a certificate/ledger seal rather than a generic colored chip.
+   Ordinary ratings stay flat/navy-muted. */
 .badge {
   display: inline-block;
   font-family: var(--font-mono);
@@ -141,14 +146,14 @@ label {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 3px 8px;
-  border-radius: 4px;
+  border-radius: 3px;
   border: 1px solid var(--border);
   color: var(--text-dim);
   white-space: nowrap;
 }
 .badge.stamped {
-  color: var(--accent);
-  border-color: var(--accent-dim);
-  box-shadow: inset 0 0 0 1px var(--accent-dim);
+  color: var(--gold);
+  border-color: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--gold);
   transform: rotate(-1deg);
 }
