@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -41,6 +41,7 @@ class ScanJobOut(BaseModel):
 
     id: UUID
     status: str
+    scan_type: str = "positional"
     total_stocks: int
     scanned_count: int
     failed_count: int
@@ -62,3 +63,25 @@ class ScanResultOut(BaseModel):
     sector: str | None
     created_at: datetime
     raw_result: dict[str, Any] | None = None
+
+
+class IntradayScanCreateRequest(BaseModel):
+    """Mirrors ScanCreateRequest's symbol-resolution shape (symbols overrides
+    range overrides exchanges) so the frontend's range-scan/custom-list UI
+    works unchanged for intraday. `params` overrides
+    core.intraday_scanner.DEFAULT_PARAMS[direction]; unknown keys are
+    ignored rather than rejected, same forward-compat reasoning as
+    ScanCreateRequest.thresholds."""
+
+    direction: Literal["long", "short"]
+    exchanges: list[str] = Field(default=["NSE"], description="Subset of NSE/BSE; ignored if symbols is set")
+    symbols: list[str] | None = Field(default=None, description="Explicit ticker list, overrides exchanges/range")
+    range: dict[str, list[int]] | None = Field(
+        default=None,
+        description="Optional per-exchange 1-based row range, e.g. {'NSE': [1, 100]}. Ignored if symbols is set.",
+    )
+    params: dict[str, Any] | None = Field(
+        default=None,
+        description="Overrides for core.intraday_scanner.DEFAULT_PARAMS[direction] "
+                    "(min_price, min_volume, rsi_threshold, stop_loss_pct, target_pct, ...)",
+    )

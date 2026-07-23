@@ -8,8 +8,14 @@ touching that logic. This file is that swap.
 """
 from .celery_app import celery_app
 from .scan_runner import run_scan_job
+from .intraday_scan_runner import run_intraday_scan_job
 
 
 @celery_app.task(name="scans.run_scan_job")
 def run_scan_job_task(job_id: str, symbols: list[str]) -> None:
     run_scan_job(job_id, symbols)
+
+
+@celery_app.task(name="scans.run_intraday_scan_job")
+def run_intraday_scan_job_task(job_id: str, symbols: list[str], direction: str, params: dict) -> None:
+    run_intraday_scan_job(job_id, symbols, direction, params)
