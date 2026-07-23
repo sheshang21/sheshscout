@@ -7,6 +7,12 @@ function formatDate(iso) {
   });
 }
 
+const SCAN_TYPE_LABEL = {
+  positional: 'Positional',
+  intraday_long: 'Intraday · Long',
+  intraday_short: 'Intraday · Short',
+};
+
 export default function History({ onSelect }) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,15 +20,26 @@ export default function History({ onSelect }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api.getHistory().then(setJobs).finally(() => setLoading(false));
+    // Two separate history endpoints (positional vs intraday, see
+    // app/routers/scans.py and app/routers/intraday_scans.py) -- merged
+    // here so History reads as one combined timeline instead of the
+    // intraday screeners silently missing from it.
+    Promise.all([api.getHistory(), api.getIntradayHistory()])
+      .then(([positional, intraday]) => {
+        const merged = [...positional, ...intraday].sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+        setJobs(merged);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   async function handleClear() {
-    if (!window.confirm('Clear all scan history? This cannot be undone.')) return;
+    if (!window.confirm('Clear all scan history (positional + intraday)? This cannot be undone.')) return;
     setError(null);
     setClearing(true);
     try {
-      await api.clearHistory();
+      await Promise.all([api.clearHistory(), api.clearIntradayHistory()]);
       setJobs([]);
     } catch (err) {
       setError(err?.detail ? String(err.detail) : 'Could not clear history.');
@@ -51,7 +68,9 @@ export default function History({ onSelect }) {
           {jobs.map((job) => (
             <div key={job.id} className="card history-row" onClick={() => onSelect(job)}>
               <div>
-                <div className="mono" style={{ fontSize: 14 }}>{job.total_stocks} stocks · {job.status}</div>
+                <div className="mono" style={{ fontSize: 14 }}>
+                  {SCAN_TYPE_LABEL[job.scan_type] || job.scan_type} · {job.total_stocks} stocks · {job.status}
+                </div>
                 <div className="history-meta">{formatDate(job.created_at)}</div>
               </div>
               <div className="history-meta mono">

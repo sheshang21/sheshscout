@@ -12,7 +12,18 @@ function notifyDone(job) {
   new Notification(title, { body });
 }
 
-export default function ScanProgress({ job, onUpdate }) {
+// `cancelFn`/`eventsUrlFn`/`getFn` default to the positional /scans
+// endpoints so existing callers don't need to change; App.jsx's intraday
+// view passes the /intraday-scans equivalents so a "Stop scan" click (or
+// the SSE stream / fallback poll below) hits the router that actually
+// owns that job's scan_type instead of crossing into /scans by accident.
+export default function ScanProgress({
+  job,
+  onUpdate,
+  cancelFn = api.cancelScan,
+  eventsUrlFn = api.eventsUrl,
+  getFn = api.getScan,
+}) {
   const [snapshot, setSnapshot] = useState(job);
   const [stopping, setStopping] = useState(false);
   const notifiedRef = useRef(false);
@@ -20,7 +31,7 @@ export default function ScanProgress({ job, onUpdate }) {
   async function handleStop() {
     setStopping(true);
     try {
-      const fresh = await api.cancelScan(job.id);
+      const fresh = await cancelFn(job.id);
       setSnapshot(fresh);
       onUpdate?.(fresh);
     } catch {
@@ -42,7 +53,7 @@ export default function ScanProgress({ job, onUpdate }) {
       Notification.requestPermission();
     }
 
-    const source = new EventSource(api.eventsUrl(job.id), { withCredentials: true });
+    const source = new EventSource(eventsUrlFn(job.id), { withCredentials: true });
 
     source.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -59,7 +70,7 @@ export default function ScanProgress({ job, onUpdate }) {
       // Connection dropped (e.g. server restart) -- fall back to a single
       // status poll rather than leaving the UI stuck on a stale snapshot.
       source.close();
-      api.getScan(job.id).then((fresh) => {
+      getFn(job.id).then((fresh) => {
         setSnapshot(fresh);
         onUpdate?.(fresh);
       }).catch(() => {});
