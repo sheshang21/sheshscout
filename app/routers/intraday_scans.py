@@ -1,3 +1,14 @@
+"""
+app/routers/intraday_scans.py — API for the intraday long/short screeners.
+
+Endpoint shapes deliberately mirror app/routers/scans.py (same job
+lifecycle: create -> poll/SSE -> results -> resume/cancel -> clear
+history) so the frontend can reuse ScanProgress/History/ResultsTable
+almost unchanged -- only ScanForm-equivalent and the API base path differ.
+Lives at /intraday-scans (its own prefix) rather than overloading /scans
+with a scan_type query param, so routing/URLs/permissions stay simple and
+each router file stays focused on one pipeline.
+"""
 import json
 import time
 from datetime import datetime, timezone
@@ -7,73 +18,42 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from core.intraday_scanner import DEFAULT_PARAMS
 from core.universe import load_universe
 from db.models import ScanJob, ScanJobStatus, ScanResult, ScanType, User
 from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
-from ..schemas import ScanCreateRequest, ScanJobOut, ScanResultOut
-from ..scan_runner import run_scan_job, get_debug_log
+from ..schemas import IntradayScanCreateRequest, ScanJobOut, ScanResultOut
+from ..intraday_scan_runner import run_intraday_scan_job, get_debug_log
 
-# NOTE: Render's free tier only supports Web Services -- no Background
-# Worker service, so there's nowhere for a Celery worker to run and
-# `run_scan_job_task.delay(...)` jobs just sit in Redis forever, never
-# consumed (progress stuck at 0). Reverted to step 4's approach: FastAPI's
-# BackgroundTasks runs run_scan_job() in a worker thread of this same web
-# process. See app/scan_runner.py's docstring for the tradeoff (a big scan
-# shares CPU/threads with the web server -- fine for single-user/free-tier
-# use, not the "never blocks anyone else" guarantee Celery would give on a
-# paid plan with a real worker service).
+router = APIRouter(prefix="/intraday-scans", tags=["intraday-scans"])
 
-router = APIRouter(prefix="/scans", tags=["scans"])
+_SCAN_TYPE_BY_DIRECTION = {"long": ScanType.intraday_long, "short": ScanType.intraday_short}
+_DIRECTION_BY_SCAN_TYPE = {v: k for k, v in _SCAN_TYPE_BY_DIRECTION.items()}
+_INTRADAY_SCAN_TYPES = list(_SCAN_TYPE_BY_DIRECTION.values())
 
 
-@router.get("/universe/counts")
-def universe_counts():
-    """Symbol counts per exchange, so the frontend can render Range Scan
-    bounds (e.g. 'NSE has 2143 stocks, pick rows 1-100') without
-    hardcoding numbers that drift as nse.txt/bse.txt change."""
-    return {
-        "NSE": len(load_universe(["NSE"])),
-        "BSE": len(load_universe(["BSE"])),
-    }
+def _normalize_symbols(symbols: list[str]) -> list[str]:
+    """Bare tickers -> .NS by default, same as the frontend's ScanForm
+    parseCustomList() does for the positional scanner's custom-list mode."""
+    out = []
+    for s in symbols:
+        s = s.strip().upper()
+        if not s:
+            continue
+        if not (s.endswith(".NS") or s.endswith(".BO")):
+            s = f"{s}.NS"
+        out.append(s)
+    return out
 
 
-def _get_owned_job(db: Session, job_id: UUID, user: User) -> ScanJob:
-    """404 (not 403) if the job doesn't exist OR belongs to someone else —
-    don't reveal that a given job_id exists at all to a non-owner.
-
-    Also scoped to scan_type == positional: scan_jobs is shared with the
-    intraday screeners (app/routers/intraday_scans.py) now, so without this
-    filter a positional-looking job_id could resolve to an intraday job and
-    get run through run_scan_job's fundamentals pipeline (wrong analyzer
-    entirely) -- same isolation intraday_scans.py's own _get_owned_job
-    enforces in the other direction."""
-    job = (
-        db.query(ScanJob)
-        .filter(ScanJob.id == job_id, ScanJob.user_id == user.id, ScanJob.scan_type == ScanType.positional)
-        .first()
-    )
-    if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Scan job not found")
-    return job
-
-
-@router.post("", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
-def start_scan(
-    payload: ScanCreateRequest,
-    background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def _resolve_symbols(payload: IntradayScanCreateRequest) -> list[str]:
     if payload.symbols:
-        symbols = payload.symbols
-    elif payload.range:
-        # Range Scan: slice each named exchange's universe to its 1-based
-        # From/To (inclusive), same semantics as the Streamlit app's Range
-        # Scan mode. An exchange with no entry in `range` is skipped even
-        # if it's in `exchanges`.
-        symbols = []
+        return _normalize_symbols(payload.symbols)
+
+    if payload.range:
+        symbols: list[str] = []
         for exch, bounds in payload.range.items():
             if len(bounds) != 2:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Range for {exch} must be [from, to]")
@@ -82,32 +62,69 @@ def start_scan(
             if frm < 1 or frm > to:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Invalid range for {exch}: {frm}-{to}")
             symbols.extend(exch_universe[frm - 1:to])
-    else:
-        symbols = load_universe(payload.exchanges)
+        return symbols
 
+    return load_universe(payload.exchanges)
+
+
+def _get_owned_job(db: Session, job_id: UUID, user: User) -> ScanJob:
+    """404 (not 403) if missing/not-owned/not-intraday -- same reasoning as
+    scans.py's _get_owned_job, plus scoped to intraday scan_types only so
+    this router can never touch a positional job by guessing its UUID."""
+    job = (
+        db.query(ScanJob)
+        .filter(ScanJob.id == job_id, ScanJob.user_id == user.id, ScanJob.scan_type.in_(_INTRADAY_SCAN_TYPES))
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Intraday scan job not found")
+    return job
+
+
+@router.post("", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
+def start_intraday_scan(
+    payload: IntradayScanCreateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    symbols = _resolve_symbols(payload)
     if not symbols:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Resolved symbol list is empty")
+
+    params = dict(DEFAULT_PARAMS[payload.direction])
+    if payload.params:
+        params.update({k: v for k, v in payload.params.items() if k in params})
 
     job = ScanJob(
         user_id=current_user.id,
         status=ScanJobStatus.pending,
-        scan_type=ScanType.positional,
-        universe={"exchanges": payload.exchanges, "range": payload.range, "symbols": payload.symbols},
-        thresholds=payload.thresholds,
-        min_market_cap=payload.min_market_cap,
+        scan_type=_SCAN_TYPE_BY_DIRECTION[payload.direction],
+        # Store the *resolved, normalized* symbol list (not payload.symbols
+        # verbatim) when an explicit list was given -- resume_intraday_scan
+        # below diffs this against ScanResult.symbol (always normalized,
+        # e.g. "FAKE1.NS") to find what's left to scan; storing the raw
+        # "FAKE1" would never match and everything would look unscanned.
+        universe={
+            "exchanges": payload.exchanges,
+            "range": payload.range,
+            "symbols": symbols if payload.symbols else None,
+        },
+        thresholds=params,
+        min_market_cap=0,
         total_stocks=len(symbols),
     )
     db.add(job)
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(run_scan_job, str(job.id), symbols)
+    background_tasks.add_task(run_intraday_scan_job, str(job.id), symbols, payload.direction, params)
 
     return job
 
 
 @router.get("", response_model=list[ScanJobOut])
-def scan_history(
+def intraday_scan_history(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -115,7 +132,7 @@ def scan_history(
 ):
     return (
         db.query(ScanJob)
-        .filter(ScanJob.user_id == current_user.id, ScanJob.scan_type == ScanType.positional)
+        .filter(ScanJob.user_id == current_user.id, ScanJob.scan_type.in_(_INTRADAY_SCAN_TYPES))
         .order_by(ScanJob.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -124,7 +141,7 @@ def scan_history(
 
 
 @router.get("/{job_id}", response_model=ScanJobOut)
-def scan_status(
+def intraday_scan_status(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -133,16 +150,16 @@ def scan_status(
 
 
 @router.get("/{job_id}/results", response_model=list[ScanResultOut])
-def scan_results(
+def intraday_scan_results(
     job_id: UUID,
-    qualified_only: bool = Query(default=False),
-    detailed: bool = Query(default=False, description="Include the full analyze_stock() breakdown per result"),
+    qualified_only: bool = Query(default=False, description="STRONG signals only"),
+    detailed: bool = Query(default=False, description="Include the full analyze_intraday() breakdown per result"),
     limit: int = Query(default=100, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _get_owned_job(db, job_id, current_user)  # ownership check; raises 404 if not found/owned
+    _get_owned_job(db, job_id, current_user)
 
     q = db.query(ScanResult).filter(ScanResult.scan_job_id == job_id)
     if qualified_only:
@@ -157,7 +174,7 @@ def scan_results(
 
 
 @router.post("/{job_id}/resume", response_model=ScanJobOut)
-def resume_scan(
+def resume_intraday_scan(
     job_id: UUID,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
@@ -169,10 +186,6 @@ def resume_scan(
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Scan is already running")
 
     if job.is_stale:
-        # The process that was running this job is gone (Render can restart
-        # a free web service at any time) but nothing ever got the chance to
-        # write status='failed'. Recognize that here instead of leaving the
-        # job unresumable/unstoppable forever.
         job.status = ScanJobStatus.failed
         job.error_message = (job.error_message or "") + " [orphaned: server restarted mid-scan]"
         db.commit()
@@ -182,9 +195,6 @@ def resume_scan(
     remaining = [s for s in full_universe if s not in already_scanned]
 
     if not remaining:
-        # Nothing left to do -- every symbol either has a result or was a
-        # confirmed fetch failure already counted. Report as complete
-        # rather than dispatching a no-op task.
         job.status = ScanJobStatus.completed
         db.commit()
         return job
@@ -193,21 +203,20 @@ def resume_scan(
     job.error_message = None
     db.commit()
 
-    background_tasks.add_task(run_scan_job, str(job.id), remaining)
+    direction = _DIRECTION_BY_SCAN_TYPE[job.scan_type]
+    params = job.thresholds or DEFAULT_PARAMS[direction]
+
+    background_tasks.add_task(run_intraday_scan_job, str(job.id), remaining, direction, params)
 
     return job
 
 
 @router.post("/{job_id}/cancel", response_model=ScanJobOut)
-def cancel_scan(
+def cancel_intraday_scan(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Request that a running/pending scan stop. Marks the job cancelled
-    immediately; scan_runner's poll loop (see app/scan_runner.py) notices
-    within POLL_INTERVAL_S and stops submitting/waiting on new work. Results
-    already written for symbols scanned so far are kept."""
     job = _get_owned_job(db, job_id, current_user)
 
     if job.status not in (ScanJobStatus.pending, ScanJobStatus.running):
@@ -221,47 +230,39 @@ def cancel_scan(
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
-def clear_history(
+def clear_intraday_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete every positional scan job (and cascaded results) owned by the
-    current user. Does not touch other users' jobs, intraday jobs (see
-    app/routers/intraday_scans.py's own clear_intraday_history), or the
-    global dead_symbols table."""
+    """Deletes only this user's intraday jobs -- positional jobs (and other
+    users' jobs) are untouched, since both the running-job guard and the
+    delete itself filter on scan_type.in_(_INTRADAY_SCAN_TYPES)."""
     running_jobs = (
         db.query(ScanJob)
         .filter(
             ScanJob.user_id == current_user.id,
-            ScanJob.scan_type == ScanType.positional,
+            ScanJob.scan_type.in_(_INTRADAY_SCAN_TYPES),
             ScanJob.status == ScanJobStatus.running,
         )
         .all()
     )
-    # A job stuck at status='running' with a dead/stale heartbeat isn't
-    # actually active -- it's exactly the orphaned-by-a-restart case
-    # is_stale exists to catch (see db/models.py). Don't let it block
-    # clearing history forever; only a genuinely-live scan should.
     genuinely_running = [j for j in running_jobs if not j.is_stale]
     if genuinely_running:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Stop the running scan before clearing history")
 
     db.query(ScanJob).filter(
         ScanJob.user_id == current_user.id,
-        ScanJob.scan_type == ScanType.positional,
+        ScanJob.scan_type.in_(_INTRADAY_SCAN_TYPES),
     ).delete(synchronize_session=False)
     db.commit()
 
 
 @router.get("/{job_id}/debug")
-def scan_debug(
+def intraday_scan_debug(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Live 'what is this scan doing right now' feed for the collapsible
-    debug panel -- per-symbol outcomes, progress snapshots, and enough to
-    tell a genuinely-running scan apart from an orphaned one."""
     job = _get_owned_job(db, job_id, current_user)
     return {
         "status": job.status,
@@ -275,26 +276,19 @@ def scan_debug(
 
 
 @router.get("/{job_id}/events")
-def scan_events(
+def intraday_scan_events(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Server-Sent Events stream of scan progress. Polls the job row every
-    second and emits a new event only when something changed, until the
-    job reaches a terminal state."""
-    _get_owned_job(db, job_id, current_user)  # ownership check up front
+    _get_owned_job(db, job_id, current_user)
 
     def event_stream():
-        # Own session, not the request-scoped `db` above -- this generator
-        # keeps running long after the endpoint function itself has
-        # returned, so it shouldn't share a session whose lifecycle is
-        # tied to the request/response cycle.
         stream_db = SessionLocal()
         last_snapshot = None
         try:
             while True:
-                stream_db.expire_all()  # force a fresh read; other sessions have committed since our last poll
+                stream_db.expire_all()
                 job = stream_db.query(ScanJob).filter(ScanJob.id == job_id).first()
                 if job is None:
                     break
@@ -319,5 +313,5 @@ def scan_events(
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},  # disable nginx buffering later
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

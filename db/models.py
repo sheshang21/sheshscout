@@ -70,6 +70,31 @@ class ScanJobStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class ScanType(str, enum.Enum):
+    """Which analysis pipeline a ScanJob runs: the original positional/
+    fundamentals scanner (core/scanner.py, universe.min_market_cap-based),
+    or one of the two intraday screeners ported from the standalone
+    Streamlit scripts (core/intraday_scanner.py, price/volume-based).
+
+    Deliberately reuses scan_jobs/scan_results rather than a parallel set
+    of tables -- both column shape and JSONB-flex-fields already fit:
+      - thresholds (JSONB) holds intraday params (min_volume, rsi_threshold,
+        stop_loss_pct, ...) exactly as it holds positional scoring
+        thresholds today.
+      - ScanResult.sector (unused by intraday) is repurposed to hold the
+        direction ("long"/"short") so `sector` filters/joins still work
+        without a migration on that table.
+      - ScanResult.qualified is repurposed for intraday to mean "STRONG
+        signal" (vs MODERATE) rather than positional's pass/fail bar --
+        same boolean, same qualified_only query, different meaning per
+        scan_type, exactly like a dozen other JSONB-flexible fields
+        already do in this schema.
+    """
+    positional = "positional"
+    intraday_long = "intraday_long"
+    intraday_short = "intraday_short"
+
+
 class ScanJob(Base):
     __tablename__ = "scan_jobs"
 
@@ -77,6 +102,16 @@ class ScanJob(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     status = Column(Enum(ScanJobStatus, name="scan_job_status"), nullable=False, default=ScanJobStatus.pending, index=True)
+
+    # Which pipeline this job runs (see ScanType docstring above). Indexed
+    # since both routers filter their history/clear-history queries by it.
+    scan_type = Column(
+        Enum(ScanType, name="scan_type"),
+        nullable=False,
+        default=ScanType.positional,
+        server_default=ScanType.positional.value,
+        index=True,
+    )
 
     # Scan parameters — kept as JSONB so new fields (e.g. a new threshold key)
     # don't need a migration; only add a real column if you need to query on it.

@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import auth as auth_router
 from .routers import scans as scans_router
+from .routers import intraday_scans as intraday_scans_router
 
 app = FastAPI(title="StockScout API")
 
@@ -35,6 +36,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(scans_router.router)
+app.include_router(intraday_scans_router.router)
 
 
 @app.get("/health")

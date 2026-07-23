@@ -76,6 +76,31 @@ export const api = {
   // has its own credentialed-cookie behavior (withCredentials) separate
   // from fetch's `credentials` option.
   eventsUrl: (jobId) => `${API_BASE}/scans/${jobId}/events`,
+
+  // ── Intraday long/short screeners — same job lifecycle as the positional
+  // scans above, mirrored 1:1 against /intraday-scans (see
+  // app/routers/intraday_scans.py). Kept as separate methods (not a
+  // `scanType` param on the calls above) so a stray typo can't accidentally
+  // point a positional scan at the intraday endpoints or vice versa.
+  startIntradayScan: (payload) =>
+    request('/intraday-scans', { method: 'POST', body: JSON.stringify(payload) }),
+
+  getIntradayScan: (jobId) => request(`/intraday-scans/${jobId}`),
+
+  getIntradayScanResults: (jobId, { qualifiedOnly = false, detailed = true, limit = 10000 } = {}) =>
+    request(`/intraday-scans/${jobId}/results?qualified_only=${qualifiedOnly}&detailed=${detailed}&limit=${limit}`),
+
+  resumeIntradayScan: (jobId) => request(`/intraday-scans/${jobId}/resume`, { method: 'POST' }),
+
+  cancelIntradayScan: (jobId) => request(`/intraday-scans/${jobId}/cancel`, { method: 'POST' }),
+
+  clearIntradayHistory: () => request('/intraday-scans', { method: 'DELETE' }),
+
+  getIntradayDebug: (jobId) => request(`/intraday-scans/${jobId}/debug`),
+
+  getIntradayHistory: (limit = 20) => request(`/intraday-scans?limit=${limit}`),
+
+  intradayEventsUrl: (jobId) => `${API_BASE}/intraday-scans/${jobId}/events`,
 };
 
 export { ApiError };
