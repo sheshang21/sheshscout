@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from core.universe import load_universe
-from db.models import ScanJob, ScanJobStatus, ScanResult, User
+from db.models import ScanJob, ScanJobStatus, ScanResult, ScanType, User
 from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
@@ -41,8 +41,19 @@ def universe_counts():
 
 def _get_owned_job(db: Session, job_id: UUID, user: User) -> ScanJob:
     """404 (not 403) if the job doesn't exist OR belongs to someone else —
-    don't reveal that a given job_id exists at all to a non-owner."""
-    job = db.query(ScanJob).filter(ScanJob.id == job_id, ScanJob.user_id == user.id).first()
+    don't reveal that a given job_id exists at all to a non-owner.
+
+    Also scoped to scan_type == positional: scan_jobs is shared with the
+    intraday screeners (app/routers/intraday_scans.py) now, so without this
+    filter a positional-looking job_id could resolve to an intraday job and
+    get run through run_scan_job's fundamentals pipeline (wrong analyzer
+    entirely) -- same isolation intraday_scans.py's own _get_owned_job
+    enforces in the other direction."""
+    job = (
+        db.query(ScanJob)
+        .filter(ScanJob.id == job_id, ScanJob.user_id == user.id, ScanJob.scan_type == ScanType.positional)
+        .first()
+    )
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Scan job not found")
     return job
@@ -80,6 +91,7 @@ def start_scan(
     job = ScanJob(
         user_id=current_user.id,
         status=ScanJobStatus.pending,
+        scan_type=ScanType.positional,
         universe={"exchanges": payload.exchanges, "range": payload.range, "symbols": payload.symbols},
         thresholds=payload.thresholds,
         min_market_cap=payload.min_market_cap,
@@ -103,7 +115,7 @@ def scan_history(
 ):
     return (
         db.query(ScanJob)
-        .filter(ScanJob.user_id == current_user.id)
+        .filter(ScanJob.user_id == current_user.id, ScanJob.scan_type == ScanType.positional)
         .order_by(ScanJob.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -213,11 +225,17 @@ def clear_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Delete every scan job (and cascaded results) owned by the current
-    user. Does not touch other users' jobs or the global dead_symbols table."""
+    """Delete every positional scan job (and cascaded results) owned by the
+    current user. Does not touch other users' jobs, intraday jobs (see
+    app/routers/intraday_scans.py's own clear_intraday_history), or the
+    global dead_symbols table."""
     running_jobs = (
         db.query(ScanJob)
-        .filter(ScanJob.user_id == current_user.id, ScanJob.status == ScanJobStatus.running)
+        .filter(
+            ScanJob.user_id == current_user.id,
+            ScanJob.scan_type == ScanType.positional,
+            ScanJob.status == ScanJobStatus.running,
+        )
         .all()
     )
     # A job stuck at status='running' with a dead/stale heartbeat isn't
@@ -228,7 +246,10 @@ def clear_history(
     if genuinely_running:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Stop the running scan before clearing history")
 
-    db.query(ScanJob).filter(ScanJob.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(ScanJob).filter(
+        ScanJob.user_id == current_user.id,
+        ScanJob.scan_type == ScanType.positional,
+    ).delete(synchronize_session=False)
     db.commit()
 
 
