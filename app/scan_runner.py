@@ -20,6 +20,7 @@ IMPORTANT — this is a stand-in, not the final architecture:
   to the logic itself.
 """
 import gc
+import logging
 import resource
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -28,6 +29,12 @@ from datetime import datetime, timezone
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from core.scanner import analyze_stock, fetch_stock_data, to_jsonable
+
+# Separate from _log()/_DEBUG_LOGS below, which is in-memory only and never
+# reaches Render's log stream -- that's exactly why a memory-ceiling stop
+# has been indistinguishable from every other kind of "scan stopped" when
+# looking at `render logs`. This one actually shows up there.
+logger = logging.getLogger(__name__)
 from db.models import ScanJob, ScanJobStatus, ScanResult
 from db.session import SessionLocal
 
@@ -173,8 +180,11 @@ def run_scan_job(job_id: str, symbols: list[str]) -> None:
                         # stuck at 'running' forever (that's the failure
                         # mode db.models.ScanJob.is_stale exists to catch,
                         # but avoiding it outright is strictly better).
-                        _log(job_id, f"Stopping: RSS {rss:.0f}MB hit the {MEMORY_CEILING_MB}MB "
-                                     f"safety ceiling. Resume to continue with the remaining symbols.")
+                        msg = (f"Stopping: RSS {rss:.0f}MB hit the {MEMORY_CEILING_MB}MB "
+                               f"safety ceiling. Resume to continue with the remaining symbols.")
+                        _log(job_id, msg)
+                        logger.warning("scan_runner[%s]: %s (scanned %d/%d)",
+                                        job_id, msg, job.scanned_count, job.total_stocks)
                         job.status = ScanJobStatus.failed
                         job.error_message = (
                             f"Stopped at {job.scanned_count}/{job.total_stocks} to stay under "
