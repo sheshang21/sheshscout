@@ -228,7 +228,11 @@ def _make_session():
 # Also previously unbounded -- holds the actual DataFrames per symbol per
 # property (history, financials, balance_sheet, ...), so a long scan grew
 # this right alongside _ticker_registry above. Same LRU cap treatment.
-_MEM_CACHE_MAX = 1000
+_MEM_CACHE_MAX = 150  # was 1000 -- a full-universe scan never revisits a symbol,
+                       # so this cache does nothing useful for that case, only
+                       # eats into the MEMORY_CEILING_MB budget in app/scan_runner.py
+                       # before the scan gets meaningfully far. Sized for dashboard
+                       # refresh / resume re-lookups, not for holding the universe.
 _mem_cache: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
 _cache_lock = threading.Lock()
 
@@ -409,7 +413,7 @@ class _CachedTicker:
 # roughly N stocks into every scan. Bounded with real LRU eviction now --
 # capacity sized for "helps repeated lookups of the same symbol in a short
 # window" (dashboard refreshes, resume flows), not "hold the whole universe."
-_TICKER_REGISTRY_MAX = 200
+_TICKER_REGISTRY_MAX = 30  # was 200 -- same reasoning as _MEM_CACHE_MAX above
 _ticker_registry: "OrderedDict[str, _CachedTicker]" = OrderedDict()
 _registry_lock   = threading.Lock()
 
