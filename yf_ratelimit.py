@@ -417,6 +417,18 @@ _TICKER_REGISTRY_MAX = 30  # was 200 -- same reasoning as _MEM_CACHE_MAX above
 _ticker_registry: "OrderedDict[str, _CachedTicker]" = OrderedDict()
 _registry_lock   = threading.Lock()
 
+# Printed once at import time (process boot) so a stale/uncached deploy is
+# visible directly in Render's boot log instead of having to infer it from
+# scan behavior after the fact -- grep the log for "yf_ratelimit CONFIG"
+# right after a deploy finishes. If these numbers don't match this file,
+# Render is running an old build and nothing below this point matters yet.
+logger.warning(
+    "yf_ratelimit CONFIG: MIN_DELAY_S=%.1f MAX_DELAY_S=%.1f COOLDOWN_S=%.1f "
+    "BASE_BACKOFF_S=%.1f TICKER_REGISTRY_MAX=%d MEM_CACHE_MAX=%d",
+    MIN_DELAY_S, MAX_DELAY_S, COOLDOWN_S, BASE_BACKOFF_S,
+    _TICKER_REGISTRY_MAX, _MEM_CACHE_MAX,
+)
+
 def safe_ticker(symbol: str) -> _CachedTicker:
     """
     Drop-in for yf.Ticker(symbol).
