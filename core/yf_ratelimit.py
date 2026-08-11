@@ -101,25 +101,50 @@ except ImportError:
     from redis_client import trigger_cooldown as _redis_trigger_cooldown
 
 # ────────────────────────────────────────────────────────────────────────────
-# CONFIG  (tune here if needed)
+# CONFIG  (env-var overridable -- set these in Render's Environment tab
+# without touching code or waiting on a deploy. Every value below falls
+# back to its current tuned default if the env var is unset or unparsable.)
 # ────────────────────────────────────────────────────────────────────────────
-MIN_DELAY_S      = 0.8    # minimum pause between Yahoo requests
-MAX_DELAY_S      = 2.5    # maximum pause (random jitter)
-MAX_RETRIES      = 3      # retry budget per call (was 5 -- see cooldown note below)
-BASE_BACKOFF_S   = 3.0    # base for exponential backoff on 429
-CACHE_TTL_S      = 3600   # in-process cache TTL (1 hour)
-COOLDOWN_S       = 20.0   # shared pause applied to ALL threads/processes after any 429
-REQUEST_TIMEOUT_S = 15.0  # hard ceiling on any single HTTP call to Yahoo -- see
-                          # _make_session() below. Without this, a stalled/half-open
-                          # TCP connection blocks its worker thread FOREVER. With a
-                          # fixed-size ThreadPoolExecutor, enough of these pile up and
-                          # every worker ends up wedged on a dead socket at once --
-                          # the scan just stops advancing mid-run, at a different,
-                          # seemingly arbitrary stock count each time. This is the
-                          # actual root cause of scans "getting stuck" partway through
-                          # (e.g. around 80 or 130 tickers) -- never about which
-                          # ticker, always about how many stalled sockets happen to
-                          # accumulate before every worker thread is occupied.
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("yf_ratelimit: bad value for %s, using default %s", name, default)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("yf_ratelimit: bad value for %s, using default %s", name, default)
+        return default
+
+
+MIN_DELAY_S      = _env_float("YF_MIN_DELAY_S", 1.1)     # minimum pause between Yahoo requests
+MAX_DELAY_S      = _env_float("YF_MAX_DELAY_S", 3.2)     # maximum pause (random jitter)
+MAX_RETRIES      = _env_int("YF_MAX_RETRIES", 3)         # retry budget per call
+BASE_BACKOFF_S   = _env_float("YF_BASE_BACKOFF_S", 4.0)  # base for exponential backoff on 429
+CACHE_TTL_S      = _env_int("YF_CACHE_TTL_S", 3600)      # in-process cache TTL (seconds)
+COOLDOWN_S       = _env_float("YF_COOLDOWN_S", 35.0)     # shared pause applied to ALL threads/
+                          # processes after any 429 OR a silent empty-response block -- an
+                          # empty DataFrame now triggers this same shared cooldown, not just
+                          # a real HTTP 429, since in practice Yahoo silently blocking a
+                          # shared/free-tier IP range shows up as empty responses far more
+                          # often than an actual 429 status.
+                          # IMPORTANT: core/redis_client.py's throttle_wait()/trigger_cooldown()
+                          # read these SAME env vars (YF_MIN_DELAY_S / YF_COOLDOWN_S) directly,
+                          # rather than duplicating their own constants -- they used to have
+                          # separate hardcoded copies that could (and did) silently drift out
+                          # of sync with the ones here, since throttle_wait() is what actually
+                          # paces cross-process requests through Redis.
+REQUEST_TIMEOUT_S = _env_float("YF_REQUEST_TIMEOUT_S", 15.0)  # hard ceiling on any single
+                          # HTTP call to Yahoo -- see _make_session() below. Without this, a
+                          # stalled/half-open TCP connection blocks its worker thread FOREVER.
+                          # With a fixed-size ThreadPoolExecutor, enough of these pile up and
+                          # every worker ends up wedged on a dead socket at once -- the scan
+                          # just stops advancing mid-run, at a different, seemingly arbitrary
+                          # stock count each time.
 _CHROME_UA       = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -222,7 +247,11 @@ def _make_session():
 # Also previously unbounded -- holds the actual DataFrames per symbol per
 # property (history, financials, balance_sheet, ...), so a long scan grew
 # this right alongside _ticker_registry above. Same LRU cap treatment.
-_MEM_CACHE_MAX = 1000
+_MEM_CACHE_MAX = _env_int("YF_MEM_CACHE_MAX", 150)  # a full-universe scan never revisits
+                       # a symbol, so this cache does nothing useful for that case, only
+                       # eats into the SCAN_MEMORY_CEILING_MB budget in app/scan_runner.py
+                       # before the scan gets meaningfully far. Sized for dashboard
+                       # refresh / resume re-lookups, not for holding the universe.
 _mem_cache: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
 _cache_lock = threading.Lock()
 
@@ -273,10 +302,20 @@ def _with_retry(fn, *args, **kwargs):
             time.sleep(backoff)
         try:
             result = fn(*args, **kwargs)
-            # yf.download returns a DataFrame; empty == likely rate-limited
+            # yf.download returns a DataFrame; empty == likely rate-limited.
+            # THIS is the fix for scans stalling/crawling around the same
+            # stock count every run: an empty response almost always means
+            # Yahoo is silently throttling this IP, exactly like a real 429
+            # -- but until now only an actual 429 exception triggered the
+            # shared Redis cooldown below. An empty DataFrame just retried
+            # LOCALLY on this one thread, so the other 3 worker threads kept
+            # hammering Yahoo through the same block at full speed the whole
+            # time, which is what turned a normal rate-limit into a
+            # scan-wide crawl. Now both cases pause every worker together.
             if isinstance(result, pd.DataFrame) and result.empty and attempt < MAX_RETRIES - 1:
                 logger.warning("yf_ratelimit: empty DataFrame on attempt %d — retrying", attempt + 1)
                 last_exc = RuntimeError("Empty DataFrame returned (possible silent 429)")
+                _trigger_cooldown()  # tell every other thread/process to back off too
                 continue
             return result
         except Exception as exc:
@@ -393,9 +432,22 @@ class _CachedTicker:
 # roughly N stocks into every scan. Bounded with real LRU eviction now --
 # capacity sized for "helps repeated lookups of the same symbol in a short
 # window" (dashboard refreshes, resume flows), not "hold the whole universe."
-_TICKER_REGISTRY_MAX = 200
+_TICKER_REGISTRY_MAX = _env_int("YF_TICKER_REGISTRY_MAX", 30)  # same reasoning as
+                       # _MEM_CACHE_MAX above
 _ticker_registry: "OrderedDict[str, _CachedTicker]" = OrderedDict()
 _registry_lock   = threading.Lock()
+
+# Printed once at import time (process boot) so a stale/uncached deploy is
+# visible directly in Render's boot log instead of having to infer it from
+# scan behavior after the fact -- grep the log for "yf_ratelimit CONFIG"
+# right after a deploy finishes. If these numbers don't match this file,
+# Render is running an old build and nothing below this point matters yet.
+logger.warning(
+    "yf_ratelimit CONFIG: MIN_DELAY_S=%.1f MAX_DELAY_S=%.1f COOLDOWN_S=%.1f "
+    "BASE_BACKOFF_S=%.1f TICKER_REGISTRY_MAX=%d MEM_CACHE_MAX=%d",
+    MIN_DELAY_S, MAX_DELAY_S, COOLDOWN_S, BASE_BACKOFF_S,
+    _TICKER_REGISTRY_MAX, _MEM_CACHE_MAX,
+)
 
 def safe_ticker(symbol: str) -> _CachedTicker:
     """

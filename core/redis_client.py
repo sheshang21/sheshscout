@@ -64,8 +64,23 @@ def get_redis() -> redis.Redis:
 _COOLDOWN_KEY = "ratelimit:cooldown_until"
 _LAST_REQUEST_KEY = "ratelimit:last_request"
 
-MIN_DELAY_S = 0.8   # mirrors yf_ratelimit.MIN_DELAY_S
-COOLDOWN_S = 20.0   # mirrors yf_ratelimit.COOLDOWN_S
+# These used to be separate hardcoded constants ("mirrors yf_ratelimit.*")
+# that could silently drift out of sync with core/yf_ratelimit.py's own
+# values -- and did: throttle_wait() below is what actually paces requests
+# across worker processes via Redis, so a tuning change in yf_ratelimit.py
+# alone never reached the real cross-process throttle. Reading the same
+# env vars directly here removes the duplication instead of just
+# re-syncing the numbers once.
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("redis_client: bad value for %s, using default %s", name, default)
+        return default
+
+
+MIN_DELAY_S = _env_float("YF_MIN_DELAY_S", 1.1)
+COOLDOWN_S = _env_float("YF_COOLDOWN_S", 35.0)
 
 
 def throttle_wait():
