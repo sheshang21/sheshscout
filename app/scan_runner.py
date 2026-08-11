@@ -21,6 +21,7 @@ IMPORTANT — this is a stand-in, not the final architecture:
 """
 import gc
 import logging
+import os
 import resource
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -38,11 +39,22 @@ logger = logging.getLogger(__name__)
 from db.models import ScanJob, ScanJobStatus, ScanResult
 from db.session import SessionLocal
 
-MAX_WORKERS = 4         # lowered from 6 -- see memory note below
-POLL_INTERVAL_S = 3      # how often we check the DB for a cancellation request
-                        # and write a heartbeat
-MEMORY_CEILING_MB = 420  # Render free web services get 512MB total, shared
-                         # with the FastAPI process itself + Python/pandas
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("scan_runner: bad value for %s, using default %s", name, default)
+        return default
+
+
+# All three env-var overridable -- set in Render's Environment tab without
+# a code change or waiting on a rebuild.
+MAX_WORKERS = _env_int("SCAN_MAX_WORKERS", 4)  # lowered from 6 -- see memory note below
+POLL_INTERVAL_S = _env_int("SCAN_POLL_INTERVAL_S", 3)  # how often we check the DB for a
+                        # cancellation request and write a heartbeat
+MEMORY_CEILING_MB = _env_int("SCAN_MEMORY_CEILING_MB", 420)  # Render free web services get
+                         # 512MB total, shared with the FastAPI process itself + Python/pandas
                          # import overhead (~100-150MB baseline). If our own
                          # RSS gets this high, stop cleanly (mark the job
                          # failed with a resumable message) rather than let
@@ -56,6 +68,11 @@ MEMORY_CEILING_MB = 420  # Render free web services get 512MB total, shared
                          # Those are now capped with LRU eviction -- this
                          # ceiling is a safety net in case a run still gets
                          # close, not the primary fix.
+
+logger.warning(
+    "scan_runner CONFIG: MAX_WORKERS=%d POLL_INTERVAL_S=%d MEMORY_CEILING_MB=%d",
+    MAX_WORKERS, POLL_INTERVAL_S, MEMORY_CEILING_MB,
+)
 
 
 def _rss_mb() -> float:
