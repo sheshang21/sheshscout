@@ -81,6 +81,26 @@ def _env_float(name: str, default: float) -> float:
 
 MIN_DELAY_S = _env_float("YF_MIN_DELAY_S", 1.1)
 COOLDOWN_S = _env_float("YF_COOLDOWN_S", 35.0)
+# How long throttle_wait() will keep waiting out an ACTIVE cooldown before
+# giving up and proceeding anyway. This used to be a bare hardcoded 30 --
+# completely disconnected from COOLDOWN_S. The moment COOLDOWN_S was raised
+# to 35 (see core/yf_ratelimit.py), that 30s ceiling started firing a few
+# seconds BEFORE the cooldown it was supposed to be waiting out actually
+# expired, so a worker would hit Yahoo again while still inside the
+# cooldown window, immediately draw another 429, which reset the cooldown,
+# which the ceiling cut short again -- a real loop, not a hypothetical one
+# (see the repeated "hit 30s safety ceiling" / 429 pairs ~30s apart in the
+# Render logs). Always sized comfortably longer than COOLDOWN_S now, so it
+# can only ever cut off a genuinely stuck Redis loop, never an active,
+# legitimate cooldown.
+THROTTLE_MAX_WAIT_S = _env_float("YF_THROTTLE_MAX_WAIT_S", max(120.0, COOLDOWN_S * 2))
+if THROTTLE_MAX_WAIT_S < COOLDOWN_S:
+    logger.warning(
+        "redis_client: YF_THROTTLE_MAX_WAIT_S=%.0f is shorter than YF_COOLDOWN_S=%.0f -- "
+        "this will cut cooldowns short and cause repeated 429s. Raise "
+        "YF_THROTTLE_MAX_WAIT_S above YF_COOLDOWN_S.",
+        THROTTLE_MAX_WAIT_S, COOLDOWN_S,
+    )
 
 
 def throttle_wait():
@@ -99,7 +119,9 @@ def throttle_wait():
     flaky Redis is still worse than just proceeding -- Yahoo's own 429s are
     the backstop either way).
     """
-    deadline = time.time() + 30  # absolute ceiling regardless of how many loop iterations
+    deadline = time.time() + THROTTLE_MAX_WAIT_S  # absolute ceiling regardless of how
+                                                    # many loop iterations -- see the
+                                                    # note on THROTTLE_MAX_WAIT_S above
     while time.time() < deadline:
         try:
             r = get_redis()
@@ -120,7 +142,7 @@ def throttle_wait():
         except redis.RedisError as exc:
             logger.warning("throttle_wait: Redis error (%s) — proceeding without throttle", exc)
             return
-    logger.warning("throttle_wait: hit 30s safety ceiling — proceeding without throttle")
+    logger.warning("throttle_wait: hit %.0fs safety ceiling — proceeding without throttle", THROTTLE_MAX_WAIT_S)
 
 
 def trigger_cooldown(seconds: float = COOLDOWN_S):
