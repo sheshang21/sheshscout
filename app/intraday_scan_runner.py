@@ -18,6 +18,7 @@ Same BackgroundTasks caveat as scan_runner.py's docstring: this runs in a
 worker thread of the same web server process, not an isolated worker.
 """
 import gc
+import logging
 import resource
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -29,11 +30,16 @@ from core.intraday_scanner import analyze_intraday, fetch_intraday_data
 from core.scanner import to_jsonable
 from db.models import ScanJob, ScanJobStatus, ScanResult
 from db.session import SessionLocal
+# Shared with app/scan_runner.py rather than a second hardcoded copy -- the
+# duplicate MAX_WORKERS=4 / POLL_INTERVAL_S=3 / MEMORY_CEILING_MB=420 here
+# used to be completely disconnected from scan_runner.py's env-var-driven
+# versions (SCAN_MAX_WORKERS etc.), so every fix aimed at "the scan" only
+# ever reached the regular /scans pipeline, never /intraday-scans, with no
+# visible sign that was happening. One definition now; both pipelines get
+# whatever SCAN_MAX_WORKERS/SCAN_POLL_INTERVAL_S/SCAN_MEMORY_CEILING_MB say.
+from app.scan_runner import MAX_WORKERS, POLL_INTERVAL_S, MEMORY_CEILING_MB
 
-MAX_WORKERS = 4          # same as scan_runner.py -- one shared Render free-tier box
-POLL_INTERVAL_S = 3
-MEMORY_CEILING_MB = 420  # see scan_runner.py's MEMORY_CEILING_MB note; same ceiling,
-                         # same reasoning, same Render container.
+logger = logging.getLogger(__name__)
 
 
 def _rss_mb() -> float:
@@ -137,8 +143,11 @@ def run_intraday_scan_job(job_id: str, symbols: list[str], direction: str, param
                                  f"RSS {rss:.0f}MB")
 
                     if rss >= MEMORY_CEILING_MB:
-                        _log(job_id, f"Stopping: RSS {rss:.0f}MB hit the {MEMORY_CEILING_MB}MB "
-                                     f"safety ceiling. Resume to continue with the remaining symbols.")
+                        msg = (f"Stopping: RSS {rss:.0f}MB hit the {MEMORY_CEILING_MB}MB "
+                               f"safety ceiling. Resume to continue with the remaining symbols.")
+                        _log(job_id, msg)
+                        logger.warning("intraday_scan_runner[%s]: %s (scanned %d/%d)",
+                                        job_id, msg, job.scanned_count, job.total_stocks)
                         job.status = ScanJobStatus.failed
                         job.error_message = (
                             f"Stopped at {job.scanned_count}/{job.total_stocks} to stay under "
