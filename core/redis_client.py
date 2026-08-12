@@ -79,6 +79,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        logger.warning("redis_client: bad value for %s, using default %s", name, default)
+        return default
+
+
 MIN_DELAY_S = _env_float("YF_MIN_DELAY_S", 1.1)
 COOLDOWN_S = _env_float("YF_COOLDOWN_S", 35.0)
 # How long throttle_wait() will keep waiting out an ACTIVE cooldown before
@@ -176,6 +184,60 @@ def trigger_cooldown(seconds: float = COOLDOWN_S):
         # means other workers won't hear about it -- not a reason to also
         # crash the worker that hit the 429 in the first place.
         logger.warning("trigger_cooldown: Redis error (%s) — cooldown not shared", exc)
+
+
+_EMPTY_STREAK_KEY = "ratelimit:empty_streak"
+EMPTY_STREAK_THRESHOLD = _env_int("YF_EMPTY_STREAK_THRESHOLD", 4)  # how many EMPTY
+    # responses in a row, across the WHOLE worker pool, before treating it as a
+    # real silent block and triggering the shared cooldown -- as opposed to
+    # triggering on every single empty response, which used to fire a full
+    # COOLDOWN_S pause for one legitimately-delisted or no-trades-today
+    # symbol. That's common and expected, especially for intraday scans
+    # (period=1d/5d on illiquid small-caps genuinely returns empty on a
+    # quiet day, with no rate-limiting involved at all) -- triggering a
+    # pool-wide 35s+ pause on every one of those made intraday scans slower
+    # than before this whole cooldown mechanism existed. A real Yahoo block
+    # shows up as MANY consecutive empties across unrelated symbols, not one.
+
+
+def note_empty_response(cooldown_seconds: float = COOLDOWN_S) -> bool:
+    """Record one empty/possibly-blocked response. Returns True if this
+    pushed the streak over EMPTY_STREAK_THRESHOLD and triggered the shared
+    cooldown, False otherwise (including on Redis errors -- fails open,
+    same reasoning as everywhere else in this module: a scan that can't
+    coordinate cross-process throttling should degrade to "no shared
+    signal" rather than block or crash)."""
+    try:
+        r = get_redis()
+        streak = r.incr(_EMPTY_STREAK_KEY)
+        r.expire(_EMPTY_STREAK_KEY, 120)  # a stale streak from a much earlier,
+                                           # already-resolved block shouldn't
+                                           # linger forever if nothing resets it
+        if streak >= EMPTY_STREAK_THRESHOLD:
+            logger.warning(
+                "note_empty_response: %d empty responses in a row across the pool -- "
+                "treating as a real block, cooling down ALL workers for %.0fs",
+                streak, cooldown_seconds,
+            )
+            trigger_cooldown(cooldown_seconds)
+            r.set(_EMPTY_STREAK_KEY, 0)
+            return True
+        return False
+    except redis.RedisError as exc:
+        logger.warning("note_empty_response: Redis error (%s) — streak not tracked", exc)
+        return False
+
+
+def note_success() -> None:
+    """Any real (non-empty) response breaks the empty streak -- one
+    delisted stock in the middle of a run of good responses is noise, not
+    a block, and shouldn't be allowed to accumulate toward the threshold
+    over the course of a long scan."""
+    try:
+        r = get_redis()
+        r.set(_EMPTY_STREAK_KEY, 0)
+    except redis.RedisError as exc:
+        logger.warning("note_success: Redis error (%s) — streak not reset", exc)
 
 
 # ── Shared stock-data cache (used by core/scanner.py in step 5) ────────────

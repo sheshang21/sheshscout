@@ -96,9 +96,13 @@ import yfinance as yf
 try:
     from .redis_client import throttle_wait as _redis_throttle_wait
     from .redis_client import trigger_cooldown as _redis_trigger_cooldown
+    from .redis_client import note_empty_response as _redis_note_empty
+    from .redis_client import note_success as _redis_note_success
 except ImportError:
     from redis_client import throttle_wait as _redis_throttle_wait      # running standalone
     from redis_client import trigger_cooldown as _redis_trigger_cooldown
+    from redis_client import note_empty_response as _redis_note_empty
+    from redis_client import note_success as _redis_note_success
 
 # ────────────────────────────────────────────────────────────────────────────
 # CONFIG  (env-var overridable -- set these in Render's Environment tab
@@ -127,11 +131,17 @@ MAX_RETRIES      = _env_int("YF_MAX_RETRIES", 3)         # retry budget per call
 BASE_BACKOFF_S   = _env_float("YF_BASE_BACKOFF_S", 4.0)  # base for exponential backoff on 429
 CACHE_TTL_S      = _env_int("YF_CACHE_TTL_S", 3600)      # in-process cache TTL (seconds)
 COOLDOWN_S       = _env_float("YF_COOLDOWN_S", 35.0)     # shared pause applied to ALL threads/
-                          # processes after any 429 OR a silent empty-response block -- an
-                          # empty DataFrame now triggers this same shared cooldown, not just
-                          # a real HTTP 429, since in practice Yahoo silently blocking a
-                          # shared/free-tier IP range shows up as empty responses far more
-                          # often than an actual 429 status.
+                          # processes after any 429, OR after several consecutive silent
+                          # empty responses across the WHOLE pool (see note_empty_response()
+                          # in core/redis_client.py) -- NOT after every single empty response.
+                          # That was the previous behaviour and it overcorrected badly for
+                          # intraday scans: a single legitimately-delisted or no-trades-today
+                          # symbol (very common with period=1d/5d on illiquid names) isn't
+                          # evidence of a block, and pausing the entire pool for COOLDOWN_S
+                          # on every one of those made intraday scans slower than before this
+                          # mechanism existed at all. A real silent block shows up as MANY
+                          # empties in a row across unrelated symbols -- that's what actually
+                          # triggers this now.
                           # IMPORTANT: core/redis_client.py's throttle_wait()/trigger_cooldown()
                           # read these SAME env vars (YF_MIN_DELAY_S / YF_COOLDOWN_S) directly,
                           # rather than duplicating their own constants -- they used to have
@@ -302,21 +312,24 @@ def _with_retry(fn, *args, **kwargs):
             time.sleep(backoff)
         try:
             result = fn(*args, **kwargs)
-            # yf.download returns a DataFrame; empty == likely rate-limited.
-            # THIS is the fix for scans stalling/crawling around the same
-            # stock count every run: an empty response almost always means
-            # Yahoo is silently throttling this IP, exactly like a real 429
-            # -- but until now only an actual 429 exception triggered the
-            # shared Redis cooldown below. An empty DataFrame just retried
-            # LOCALLY on this one thread, so the other 3 worker threads kept
-            # hammering Yahoo through the same block at full speed the whole
-            # time, which is what turned a normal rate-limit into a
-            # scan-wide crawl. Now both cases pause every worker together.
+            # yf.download returns a DataFrame; empty == possibly rate-limited,
+            # OR just a genuinely quiet symbol (delisted, no trades that
+            # session -- very common for intraday period=1d/5d queries on
+            # illiquid names). One empty response on its own proves nothing,
+            # so it no longer pauses every other worker by itself -- only a
+            # STREAK of empties across the whole pool does (see
+            # note_empty_response() in core/redis_client.py). This is what
+            # stops both failure modes seen in production: workers hammering
+            # through a real silent block at full speed (old bug, before any
+            # empty response triggered a cooldown), and a single delisted
+            # stock pausing the entire pool for COOLDOWN_S each (the
+            # overcorrection from treating every empty as a block).
             if isinstance(result, pd.DataFrame) and result.empty and attempt < MAX_RETRIES - 1:
                 logger.warning("yf_ratelimit: empty DataFrame on attempt %d — retrying", attempt + 1)
-                last_exc = RuntimeError("Empty DataFrame returned (possible silent 429)")
-                _trigger_cooldown()  # tell every other thread/process to back off too
+                last_exc = RuntimeError("Empty DataFrame returned (possible silent block)")
+                _redis_note_empty(COOLDOWN_S)
                 continue
+            _redis_note_success()  # breaks any accumulating empty streak
             return result
         except Exception as exc:
             last_exc = exc
@@ -326,7 +339,8 @@ def _with_retry(fn, *args, **kwargs):
                 # Non-rate-limit error — don't keep retrying
                 raise
             logger.warning("yf_ratelimit: rate-limit hit on attempt %d: %s", attempt + 1, exc)
-            _trigger_cooldown()  # tell every other thread to back off too
+            _trigger_cooldown()  # a REAL 429 always pauses everyone immediately --
+                                  # no streak needed, this one's unambiguous
 
     raise last_exc or RuntimeError("yf_ratelimit: all retries exhausted")
 
