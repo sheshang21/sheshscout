@@ -87,6 +87,7 @@ export default function App() {
                   job={activeIntradayJob}
                   onUpdate={handleIntradayJobUpdate}
                   cancelFn={api.cancelIntradayScan}
+                  resumeFn={api.resumeIntradayScan}
                   eventsUrlFn={api.intradayEventsUrl}
                   getFn={api.getIntradayScan}
                 />
