@@ -67,6 +67,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       COOKIE_SECURE: "true"   # real deploy is behind HTTPS via Caddy -- see Caddyfile
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-1209600}
+      # This compose file runs a real `worker` service below -- use it.
+      # Without this, scans ran inline in THIS container regardless of the
+      # worker existing (see app/dispatch.py). Override to "false" only if
+      # you deliberately stop/remove the worker service.
+      SCAN_USE_CELERY: ${SCAN_USE_CELERY:-true}
     depends_on:
       postgres:
         condition: service_healthy

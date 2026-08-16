@@ -28,6 +28,13 @@ for a local smoke test — no TLS cert without a real public domain).
 Since frontend and API share one origin here, the default cookie settings
 (`COOKIE_SAMESITE=lax`) are correct — don't change them for this option.
 
+`docker-compose.yml` already sets `SCAN_USE_CELERY=true` on the `web`
+service, so scans are dispatched to the `worker` container instead of
+running inline in the web process — that's the whole point of having a
+separate `worker` service. If you ever remove/stop that service, set
+`SCAN_USE_CELERY=false` too or scans will sit at 0/N forever (queued for a
+worker that isn't running). See `app/dispatch.py`.
+
 ## Option 2: Render (no server to own)
 
 Render deploys each piece as its own managed service instead of one
@@ -47,6 +54,13 @@ docker-compose stack, and handles TLS/domains for you — no Caddy needed.
      `REDIS_URL` from the Postgres/Key Value instances Render provisioned,
      plus `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`, and
      `FRONTEND_ORIGIN=https://<your-static-site>.onrender.com`.
+   - **On the Web Service only**, also set `SCAN_USE_CELERY=true` once the
+     Background Worker is up and running (check its logs for `celery@...
+     ready`). Without this, scans run inline in the Web Service and the
+     Background Worker you're paying for does nothing — this is a real
+     switch, not a formality; leaving it at the default `false` (or
+     unset) is correct on the **free tier**, where there's no Background
+     Worker to send work to at all.
    - The Static Site build needs `VITE_API_BASE=https://<your-web-service>.onrender.com`
      set as a build-time environment variable (Render supports this per-service).
 
