@@ -248,7 +248,14 @@ def note_success() -> None:
 # as usage grows, per the architecture notes.
 
 _CACHE_PREFIX = "cache:stock:"
-_CACHE_TTL_S = 300  # matches core/scanner.py's existing 300s TTL
+# Was a bare hardcoded 300 ("matches core/scanner.py's existing 300s TTL" --
+# scanner.py never actually set this itself, it just called cache_set_stock()
+# with whatever default lived here). Env-adjustable like every other tunable
+# in this file. Longer = fewer duplicate Yahoo hits when multiple users/scans
+# overlap on the same symbol soon after each other, at the cost of slightly
+# stale prices for that window -- 300s is a reasonable default for a scanner
+# (not a live tick feed).
+_CACHE_TTL_S = _env_int("YF_STOCK_CACHE_TTL_S", 300)
 
 
 def cache_get_stock(symbol: str):
