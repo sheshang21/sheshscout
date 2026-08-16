@@ -208,8 +208,23 @@ def _restore_arrays(cached: dict) -> dict:
 # ── Global concurrency gate ──────────────────────────────────────────────────
 # Controls how many workers are actually hitting Yahoo at the same moment.
 # Each stock needs ~3 HTTP calls; 6 workers × 3 calls = 18 concurrent connections,
-# well under Yahoo's ~20–30 limit. Adjust _YF_SEMAPHORE_COUNT at runtime via sidebar.
-_YF_SEMAPHORE_COUNT = 6
+# well under Yahoo's ~20–30 limit. Was a bare hardcoded 6 -- now env-adjustable
+# like every other tunable in the pipeline. Defaults to SCAN_MAX_WORKERS
+# (app/scan_runner.py's own thread-pool size) when unset, since there's no
+# point letting more scan threads run than can actually get through this gate
+# at once -- falls back to 4 if neither is set.
+_logger = logging.getLogger(__name__)
+
+
+def _env_int(_name: str, _default: int) -> int:
+    try:
+        return int(os.environ.get(_name, _default))
+    except (TypeError, ValueError):
+        _logger.warning("scanner: bad value for %s, using default %s", _name, _default)
+        return _default
+
+
+_YF_SEMAPHORE_COUNT = _env_int("YF_SEMAPHORE_COUNT", _env_int("SCAN_MAX_WORKERS", 4))
 _YF_SEMAPHORE = threading.Semaphore(_YF_SEMAPHORE_COUNT)
 
 _RETRY_MAX = 3
