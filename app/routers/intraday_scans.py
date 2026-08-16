@@ -25,7 +25,8 @@ from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
 from ..schemas import IntradayScanCreateRequest, ScanJobOut, ScanResultOut
-from ..intraday_scan_runner import run_intraday_scan_job, get_debug_log
+from ..intraday_scan_runner import get_debug_log
+from ..dispatch import dispatch_intraday_scan
 
 router = APIRouter(prefix="/intraday-scans", tags=["intraday-scans"])
 
@@ -118,7 +119,7 @@ def start_intraday_scan(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(run_intraday_scan_job, str(job.id), symbols, payload.direction, params)
+    dispatch_intraday_scan(background_tasks, str(job.id), symbols, payload.direction, params)
 
     return job
 
@@ -206,7 +207,7 @@ def resume_intraday_scan(
     direction = _DIRECTION_BY_SCAN_TYPE[job.scan_type]
     params = job.thresholds or DEFAULT_PARAMS[direction]
 
-    background_tasks.add_task(run_intraday_scan_job, str(job.id), remaining, direction, params)
+    dispatch_intraday_scan(background_tasks, str(job.id), remaining, direction, params)
 
     return job
 

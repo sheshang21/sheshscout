@@ -13,7 +13,8 @@ from db.session import SessionLocal, get_db
 
 from ..deps import get_current_user
 from ..schemas import ScanCreateRequest, ScanJobOut, ScanResultOut
-from ..scan_runner import run_scan_job, get_debug_log
+from ..scan_runner import get_debug_log
+from ..dispatch import dispatch_positional_scan
 
 # NOTE: Render's free tier only supports Web Services -- no Background
 # Worker service, so there's nowhere for a Celery worker to run and
@@ -101,7 +102,7 @@ def start_scan(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(run_scan_job, str(job.id), symbols)
+    dispatch_positional_scan(background_tasks, str(job.id), symbols)
 
     return job
 
@@ -193,7 +194,7 @@ def resume_scan(
     job.error_message = None
     db.commit()
 
-    background_tasks.add_task(run_scan_job, str(job.id), remaining)
+    dispatch_positional_scan(background_tasks, str(job.id), remaining)
 
     return job
 
