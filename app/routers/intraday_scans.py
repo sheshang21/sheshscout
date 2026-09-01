@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from core.intraday_scanner import DEFAULT_PARAMS
 from core.universe import load_universe
+from core.company_names import get_company_name
 from db.models import ScanJob, ScanJobStatus, ScanResult, ScanType, User
 from db.session import SessionLocal, get_db
 
@@ -168,6 +169,8 @@ def intraday_scan_results(
     rows = q.order_by(ScanResult.score.desc()).offset(offset).limit(limit).all()
 
     out = [ScanResultOut.model_validate(r) for r in rows]
+    for r in out:
+        r.company_name = get_company_name(r.symbol)
     if not detailed:
         for r in out:
             r.raw_result = None
