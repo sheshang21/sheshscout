@@ -16,6 +16,7 @@ function toExportRow(r) {
   const raw = r.raw_result || {};
   return {
     Ticker: raw.ticker ?? r.symbol,
+    Company: r.company_name || '',
     Direction: raw.direction ?? r.sector,
     'Price (₹)': raw.price ?? null,
     'Change (%)': raw.change_pct ?? null,
@@ -108,7 +109,10 @@ export default function IntradayResultsTable({ jobId, refreshKey, live }) {
                 const dist = raw.dist_from_low ?? raw.dist_from_high;
                 return (
                   <tr key={r.id}>
-                    <td className="mono">{raw.ticker ?? r.symbol}</td>
+                    <td className="mono">
+                      {raw.ticker ?? r.symbol}
+                      {r.company_name && <div className="text-faint" style={{ fontSize: 11 }}>{r.company_name}</div>}
+                    </td>
                     <td className="mono">₹{raw.price?.toFixed(2) ?? '—'}</td>
                     <td><Change value={raw.change_pct} /></td>
                     <td className="mono">{dist != null ? `${dist.toFixed(2)}%` : '—'}</td>

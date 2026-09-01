@@ -33,6 +33,7 @@ function toExportRow(r) {
   const raw = r.raw_result || {};
   return {
     Symbol: r.symbol,
+    Company: r.company_name || '',
     Exchange: exchangeOf(r.symbol),
     'Price (₹)': raw.price ?? null,
     'Today (%)': raw.change ?? null,
@@ -479,7 +480,10 @@ export default function ResultsTable({ jobId, refreshKey, live }) {
                 return (
                   <Fragment key={r.id}>
                     <tr className="clickable-row" onClick={() => toggleExpanded(r.id)}>
-                      <td className="symbol-cell sticky-col">{r.symbol} <span className="text-faint">{exchangeOf(r.symbol)}</span></td>
+                      <td className="symbol-cell sticky-col">
+                        {r.symbol} <span className="text-faint">{exchangeOf(r.symbol)}</span>
+                        {r.company_name && <div className="text-faint" style={{ fontSize: 11, fontWeight: 400 }}>{r.company_name}</div>}
+                      </td>
                       <td className="num-cell">{r.score?.toFixed(0)}</td>
                       <td className="text-col"><RatingBadge rating={r.rating} /></td>
                       <td className="text-col">{r.sector}</td>

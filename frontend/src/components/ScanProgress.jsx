@@ -21,6 +21,22 @@ function isMemoryCeilingStop(job) {
   return job.status === 'failed' && /memory|ceiling/i.test(job.error_message || '');
 }
 
+// The other way a job can be dead without saying so: Render restarted the
+// server mid-scan (see app/intraday_scan_runner.py / app/scan_runner.py --
+// both run in-process, so a restart just kills the thread) and nothing
+// ever got the chance to write status='failed'. is_stale (db/models.py,
+// now included in both the /events snapshot and ScanJobOut) is how a
+// client tells this apart from a scan that's genuinely still working --
+// treat it exactly like a memory-ceiling stop: auto-resume, don't just
+// sit there showing a frozen count under a 'running' label.
+function isOrphanedRunning(job) {
+  return job.status === 'running' && !!job.is_stale;
+}
+
+function needsAutoResume(job) {
+  return isMemoryCeilingStop(job) || isOrphanedRunning(job);
+}
+
 function notifyDone(job) {
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const title = job.status === 'completed' ? 'Scan finished' : 'Scan failed';
@@ -105,9 +121,19 @@ export default function ScanProgress({
 
     source.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      const merged = { ...job, ...data };
       setSnapshot((prev) => ({ ...prev, ...data }));
+      // Propagate every tick upstream, not just terminal ones -- this is
+      // what actually drives resultsRefreshKey/intradayRefreshKey in
+      // App.jsx. Only bumping it at the end meant ResultsTable/
+      // IntradayResultsTable fetched results exactly once, at job start,
+      // and never again until the job finished or you hit Stop (which
+      // calls onUpdate itself via handleStop) -- so a scan that was
+      // genuinely finding stocks the whole time looked empty/frozen right
+      // up until you stopped it.
+      onUpdate?.(merged);
 
-      if (data.status === 'failed' && isMemoryCeilingStop(data)) {
+      if (needsAutoResume(data)) {
         source.close();
         if (autoResumeCountRef.current < MAX_AUTO_RESUMES) {
           autoResumeCountRef.current += 1;
@@ -116,16 +142,14 @@ export default function ScanProgress({
           // Bailed out of auto-resuming -- surface it like any other
           // terminal failure rather than looping silently forever.
           notifiedRef.current = true;
-          notifyDone({ ...job, ...data });
-          onUpdate?.({ ...job, ...data });
+          notifyDone(merged);
         }
         return;
       }
 
       if (TERMINAL_STATES.has(data.status) && !notifiedRef.current) {
         notifiedRef.current = true;
-        notifyDone({ ...job, ...data });
-        onUpdate?.({ ...job, ...data });
+        notifyDone(merged);
         source.close();
       }
     };
@@ -137,8 +161,7 @@ export default function ScanProgress({
       getFn(job.id).then((fresh) => {
         setSnapshot(fresh);
         onUpdate?.(fresh);
-        if (fresh.status === 'failed' && isMemoryCeilingStop(fresh) &&
-            autoResumeCountRef.current < MAX_AUTO_RESUMES) {
+        if (needsAutoResume(fresh) && autoResumeCountRef.current < MAX_AUTO_RESUMES) {
           autoResumeCountRef.current += 1;
           doResume();
         }
@@ -153,7 +176,7 @@ export default function ScanProgress({
     ? Math.round((snapshot.scanned_count / snapshot.total_stocks) * 100)
     : 0;
   const needsManualResume = snapshot.status === 'failed' && !isMemoryCeilingStop(snapshot);
-  const autoResuming = snapshot.status === 'failed' && isMemoryCeilingStop(snapshot);
+  const autoResuming = needsAutoResume(snapshot);
 
   return (
     <div className="card progress-card">
@@ -165,7 +188,7 @@ export default function ScanProgress({
           <span className="tick" key={snapshot.scanned_count}>{snapshot.scanned_count}</span>
           <span className="of"> / {snapshot.total_stocks}</span>
         </span>
-        {!TERMINAL_STATES.has(snapshot.status) && (
+        {!TERMINAL_STATES.has(snapshot.status) && !autoResuming && (
           <button type="button" className="stop-scan-btn" onClick={handleStop} disabled={stopping}>
             {stopping ? 'Stopping…' : '■ Stop scan'}
           </button>
