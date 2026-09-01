@@ -50,6 +50,13 @@ class ScanJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Computed, not a DB column (db/models.py) -- without this the SSE
+    # stream is the only place a client can ever learn a 'running' job is
+    # actually dead (server restarted mid-scan). The one-shot GET used by
+    # ScanProgress.jsx's SSE onerror fallback, and History.jsx's list view,
+    # both need it to detect the same orphaned-job case the /events stream
+    # already reports every second.
+    is_stale: bool
 
 
 class ScanResultOut(BaseModel):
@@ -63,6 +70,13 @@ class ScanResultOut(BaseModel):
     sector: str | None
     created_at: datetime
     raw_result: dict[str, Any] | None = None
+    # Not a DB column -- core.company_names has no NSE/BSE symbol column to
+    # from_attributes off of, so this is always None straight out of
+    # model_validate() and gets filled in by the router after validation
+    # (see app/routers/scans.py and app/routers/intraday_scans.py).
+    # None for anything not in the NSE name file, including every .BO
+    # symbol for now -- see core/company_names.py's docstring for why.
+    company_name: str | None = None
 
 
 class IntradayScanCreateRequest(BaseModel):
