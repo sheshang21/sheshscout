@@ -251,10 +251,32 @@ def _make_session():
     return sess
 
 
+# A reset re-triggers yfinance's cookie+crumb handshake, which hits a
+# DIFFERENT Yahoo rate limit than the one _throttle()/COOLDOWN_S already
+# guard -- the crumb endpoint specifically. Confirmed in production: once
+# _reset_session() started firing on every empty-DataFrame retry, several
+# of the MAX_WORKERS threads ended up resetting close together and Yahoo's
+# crumb endpoint started answering "rate-limited (HTTP 429), continuing
+# without crumb" -- which just guarantees the next Invalid Crumb failure.
+# So resets themselves need pacing, process-wide (not per-thread -- the
+# whole point is stopping multiple threads from re-handshaking at once):
+# skip an individual reset if one already happened too recently anywhere
+# in this process, and just let that attempt retry on the current
+# (possibly still-stale) session instead. A genuinely delisted symbol is
+# unaffected either way -- still empty after retrying. A real crumb block
+# gets one handshake attempt per interval instead of up to MAX_WORKERS of
+# them at once.
+YF_RESET_MIN_INTERVAL_S = _env_float("YF_RESET_MIN_INTERVAL_S", 20.0)
+_last_reset_ts = 0.0
+_reset_lock = threading.Lock()
+
+
 def _reset_session():
     """Drop this thread's cached curl_cffi session so the next call to
     _make_session() builds a fresh one and yfinance re-runs its cookie +
-    crumb handshake from scratch.
+    crumb handshake from scratch -- unless another thread already did
+    this within YF_RESET_MIN_INTERVAL_S, in which case this is a no-op
+    (see module comment above for why).
 
     Needed because a session is normally cached per-thread FOREVER (see
     _make_session() above) -- fine for ordinary use, but if Yahoo
@@ -262,8 +284,15 @@ def _reset_session():
     "HTTP Error 401 ... Invalid Crumb"), every later call on that same
     thread just keeps reusing the now-broken session and fails the same
     way until the whole process restarts. Called from _with_retry() on
-    an auth-shaped error, right before the retry loop's next attempt.
+    an auth-shaped error or an empty-result retry, right before the
+    retry loop's next attempt.
     """
+    global _last_reset_ts
+    now = time.time()
+    with _reset_lock:
+        if now - _last_reset_ts < YF_RESET_MIN_INTERVAL_S:
+            return
+        _last_reset_ts = now
     _thread_local.session = None
 
 
