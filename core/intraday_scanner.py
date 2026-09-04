@@ -35,8 +35,10 @@ distinction app/scan_runner.py already relies on for failed_count.
 """
 try:
     from .yf_ratelimit import safe_ticker as _rl_ticker   # normal package import
+    from .nse_data import fetch_intraday_data_nse as _fetch_nse
 except ImportError:
     from yf_ratelimit import safe_ticker as _rl_ticker    # running standalone
+    from nse_data import fetch_intraday_data_nse as _fetch_nse
 
 import pandas as pd
 
@@ -124,11 +126,24 @@ def _merge_params(direction, overrides):
 
 
 def fetch_intraday_data(symbol):
-    """symbol: full Yahoo ticker, e.g. 'RELIANCE.NS' / 'RELIANCE.BO'.
+    """symbol: full ticker, e.g. 'RELIANCE.NS' / 'RELIANCE.BO'.
 
-    Returns {'intraday': df, 'daily': df} or None if either leg came back
-    empty (delisted, no trades yet, market holiday, bad symbol, ...).
+    Returns {'intraday': df, 'daily': df} or None if data came back empty
+    (delisted, no trades yet, market holiday, bad symbol, ...).
+
+    Routing: .NS symbols go straight to core/nse_data.py -- direct NSE
+    endpoints, NO yfinance involved at all for these, so they can never be
+    affected by a Yahoo-side rate limit/cooldown, and never contribute to
+    one either. .BO symbols still go through yfinance (via the shared
+    rate-limit-safe _rl_ticker) -- NSE's free API only covers NSE-listed
+    symbols, there's no equivalent free BSE-direct source to route to yet.
     """
+    if symbol.endswith(".NS"):
+        try:
+            return _fetch_nse(symbol)
+        except Exception:
+            return None
+
     try:
         stock = _rl_ticker(symbol)
         intraday = stock.history(period="1d", interval="1m")

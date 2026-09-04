@@ -341,10 +341,28 @@ def clear_cache(symbol: str | None = None):
 # ────────────────────────────────────────────────────────────────────────────
 # RETRY DECORATOR  (wraps any callable that talks to Yahoo)
 # ────────────────────────────────────────────────────────────────────────────
-def _with_retry(fn, *args, **kwargs):
+def _with_retry(fn, *args, treat_empty_as_signal: bool = True, **kwargs):
     """
     Call fn(*args, **kwargs) with throttle + exponential backoff on errors.
     Returns the result or raises the last exception after MAX_RETRIES.
+
+    treat_empty_as_signal: whether an empty pd.DataFrame result should be
+    treated as "possibly rate-limited" (full retry ladder + counts toward
+    the pool-wide empty-streak cooldown). Only the PRICE HISTORY endpoint
+    (chart) should set this True -- an empty history() result plausibly
+    means a block. FUNDAMENTALS endpoints (income_stmt/balance_sheet/
+    quarterly_income_stmt/etc, all hitting Yahoo's quoteSummary endpoint,
+    not the chart endpoint) come back empty *legitimately* and *routinely*
+    for a huge fraction of small/micro-cap NSE/BSE names that simply have
+    no statements on file with Yahoo -- that's not evidence of a block.
+    Before this flag existed, every one of those normal, expected empty
+    fundamentals responses burned the full 3-attempt backoff ladder AND
+    counted toward note_empty_response()'s pool-wide streak, which is
+    exactly why the positional scanner (4 calls/symbol, 3 of them
+    fundamentals) tripped retries/cooldowns constantly while the intraday
+    scanner (2 calls/symbol, both chart/history) almost never did, even
+    though both go through this exact same function. See
+    core/scanner.py's fetch_stock_data() call map for the full picture.
     """
     last_exc = None
     for attempt in range(MAX_RETRIES):
@@ -360,16 +378,21 @@ def _with_retry(fn, *args, **kwargs):
             # yf.download returns a DataFrame; empty == possibly rate-limited,
             # OR just a genuinely quiet symbol (delisted, no trades that
             # session -- very common for intraday period=1d/5d queries on
-            # illiquid names). One empty response on its own proves nothing,
-            # so it no longer pauses every other worker by itself -- only a
-            # STREAK of empties across the whole pool does (see
-            # note_empty_response() in core/redis_client.py). This is what
-            # stops both failure modes seen in production: workers hammering
-            # through a real silent block at full speed (old bug, before any
-            # empty response triggered a cooldown), and a single delisted
-            # stock pausing the entire pool for COOLDOWN_S each (the
+            # illiquid names, and even more common for fundamentals calls
+            # on names Yahoo has no statements for -- see
+            # treat_empty_as_signal above). One empty response on its own
+            # proves nothing, so it no longer pauses every other worker by
+            # itself -- only a STREAK of empties across the whole pool does
+            # (see note_empty_response() in core/redis_client.py), and only
+            # for calls where empty is actually a meaningful signal. This is
+            # what stops both failure modes seen in production: workers
+            # hammering through a real silent block at full speed (old bug,
+            # before any empty response triggered a cooldown), and a single
+            # delisted stock (or a normal small-cap with no financials on
+            # file) pausing the entire pool for COOLDOWN_S each (the
             # overcorrection from treating every empty as a block).
-            if isinstance(result, pd.DataFrame) and result.empty and attempt < MAX_RETRIES - 1:
+            if (treat_empty_as_signal and isinstance(result, pd.DataFrame)
+                    and result.empty and attempt < MAX_RETRIES - 1):
                 logger.warning("yf_ratelimit: empty DataFrame on attempt %d — retrying", attempt + 1)
                 last_exc = RuntimeError("Empty DataFrame returned (possible silent block)")
                 _redis_note_empty(COOLDOWN_S)
@@ -437,6 +460,20 @@ class _CachedTicker:
               "recommendations", "calendar", "earnings_dates",
               "options")
 
+    # Fundamentals props hit Yahoo's quoteSummary endpoint (not the chart
+    # endpoint history() uses) and legitimately come back empty for a large
+    # share of small/micro-cap NSE/BSE names that just have no statements
+    # on file -- see _with_retry()'s treat_empty_as_signal docstring for
+    # why these must NOT be treated as a possible-block signal the way an
+    # empty history() result is.
+    _EMPTY_IS_NORMAL_PROPS = frozenset({
+        "financials", "income_stmt", "balance_sheet", "cashflow",
+        "quarterly_financials", "quarterly_income_stmt",
+        "quarterly_balance_sheet", "quarterly_cashflow",
+        "dividends", "splits", "actions", "recommendations",
+        "earnings_dates",
+    })
+
     def __init__(self, symbol: str):
         self._symbol  = symbol
         self._yf_obj      = None
@@ -468,7 +505,7 @@ class _CachedTicker:
         def _do():
             return getattr(self._get_yf(), prop)
 
-        result = _with_retry(_do)
+        result = _with_retry(_do, treat_empty_as_signal=prop not in self._EMPTY_IS_NORMAL_PROPS)
         _mem_set(key, result)
         return result
 
