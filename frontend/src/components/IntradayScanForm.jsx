@@ -25,6 +25,7 @@ export default function IntradayScanForm({ onStarted, disabled }) {
   const [direction, setDirection] = useState('long'); // 'long' | 'short'
   const [nse, setNse] = useState(true);
   const [bse, setBse] = useState(false);
+  const [dataSource, setDataSource] = useState('yfinance'); // 'yfinance' | 'nse' | 'auto' -- only affects .NS symbols
   const [scanMode, setScanMode] = useState('range'); // 'range' | 'custom' -- intraday scans are usually a subset, not the full universe
   const [counts, setCounts] = useState({ NSE: 0, BSE: 0 });
   const [nseFrom, setNseFrom] = useState(1);
@@ -73,7 +74,7 @@ export default function IntradayScanForm({ onStarted, disabled }) {
       return;
     }
 
-    const payload = { direction, params };
+    const payload = { direction, params, data_source: dataSource };
 
     if (scanMode === 'custom') {
       const symbols = parseCustomList();
@@ -129,6 +130,18 @@ export default function IntradayScanForm({ onStarted, disabled }) {
           <input id="intra-bse" type="checkbox" checked={bse} onChange={(e) => setBse(e.target.checked)} />
           <label htmlFor="intra-bse">BSE</label>
         </div>
+      </div>
+
+      <div className="field-row">
+        <label htmlFor="intra-data-source">NSE data source</label>
+        <select id="intra-data-source" value={dataSource} onChange={(e) => setDataSource(e.target.value)}>
+          <option value="yfinance">Yahoo Finance (default)</option>
+          <option value="nse">NSE direct (skips yfinance entirely for .NS)</option>
+          <option value="auto">Auto (NSE direct, falls back to Yahoo per-symbol)</option>
+        </select>
+        <small style={{ color: 'var(--muted, #888)', display: 'block', marginTop: 4 }}>
+          Only affects NSE symbols — BSE always uses Yahoo Finance, since there's no free NSE-equivalent for it.
+        </small>
       </div>
 
       <div className="field-row">
