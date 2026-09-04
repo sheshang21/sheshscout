@@ -99,3 +99,14 @@ class IntradayScanCreateRequest(BaseModel):
         description="Overrides for core.intraday_scanner.DEFAULT_PARAMS[direction] "
                     "(min_price, min_volume, rsi_threshold, stop_loss_pct, target_pct, ...)",
     )
+    data_source: Literal["yfinance", "nse", "auto"] = Field(
+        default="yfinance",
+        description="Where to fetch .NS price/volume data from for this scan. "
+                    "'yfinance' (default): unchanged prior behavior, goes through the "
+                    "shared Yahoo rate limiter for both NSE and BSE symbols. "
+                    "'nse': .NS symbols are fetched directly from NSE (no yfinance call "
+                    "at all, immune to Yahoo-side throttling); .BO symbols still use "
+                    "yfinance regardless, since NSE's free API has no BSE data. "
+                    "'auto': tries NSE first for .NS symbols, falls back to yfinance for "
+                    "any symbol NSE fails to return data for.",
+    )
