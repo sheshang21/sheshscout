@@ -125,24 +125,38 @@ def _merge_params(direction, overrides):
     return base
 
 
-def fetch_intraday_data(symbol):
+def fetch_intraday_data(symbol, data_source="yfinance"):
     """symbol: full ticker, e.g. 'RELIANCE.NS' / 'RELIANCE.BO'.
+
+    data_source: "yfinance" (default, unchanged prior behavior) | "nse" |
+    "auto".
+      - "yfinance": always goes through the shared yfinance rate limiter,
+        same as before this option existed. Works for both .NS and .BO.
+      - "nse": .NS symbols go straight to core/nse_data.py -- direct NSE
+        endpoints, NO yfinance involved, can't be affected by a Yahoo-side
+        cooldown and never contributes to one either. .BO symbols still
+        fall back to yfinance regardless of this setting -- NSE's free API
+        only covers NSE-listed symbols, there's no free BSE-direct source.
+      - "auto": try NSE first for .NS symbols, and if that comes back
+        None (NSE outage, unexpected response shape, etc.) fall back to
+        yfinance for that symbol rather than failing it outright.
 
     Returns {'intraday': df, 'daily': df} or None if data came back empty
     (delisted, no trades yet, market holiday, bad symbol, ...).
-
-    Routing: .NS symbols go straight to core/nse_data.py -- direct NSE
-    endpoints, NO yfinance involved at all for these, so they can never be
-    affected by a Yahoo-side rate limit/cooldown, and never contribute to
-    one either. .BO symbols still go through yfinance (via the shared
-    rate-limit-safe _rl_ticker) -- NSE's free API only covers NSE-listed
-    symbols, there's no equivalent free BSE-direct source to route to yet.
     """
-    if symbol.endswith(".NS"):
+    if data_source not in ("yfinance", "nse", "auto"):
+        data_source = "yfinance"
+
+    if symbol.endswith(".NS") and data_source in ("nse", "auto"):
         try:
-            return _fetch_nse(symbol)
+            result = _fetch_nse(symbol)
         except Exception:
+            result = None
+        if result is not None:
+            return result
+        if data_source == "nse":
             return None
+        # "auto" and NSE came back empty -- fall through to yfinance below.
 
     try:
         stock = _rl_ticker(symbol)
