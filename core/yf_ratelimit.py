@@ -251,6 +251,22 @@ def _make_session():
     return sess
 
 
+def _reset_session():
+    """Drop this thread's cached curl_cffi session so the next call to
+    _make_session() builds a fresh one and yfinance re-runs its cookie +
+    crumb handshake from scratch.
+
+    Needed because a session is normally cached per-thread FOREVER (see
+    _make_session() above) -- fine for ordinary use, but if Yahoo
+    invalidates the crumb tied to that session (observed in production as
+    "HTTP Error 401 ... Invalid Crumb"), every later call on that same
+    thread just keeps reusing the now-broken session and fails the same
+    way until the whole process restarts. Called from _with_retry() on
+    an auth-shaped error, right before the retry loop's next attempt.
+    """
+    _thread_local.session = None
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # IN-PROCESS MEMORY CACHE  (survives across Streamlit reruns in same process)
 # ────────────────────────────────────────────────────────────────────────────
@@ -328,6 +344,21 @@ def _with_retry(fn, *args, **kwargs):
                 logger.warning("yf_ratelimit: empty DataFrame on attempt %d — retrying", attempt + 1)
                 last_exc = RuntimeError("Empty DataFrame returned (possible silent block)")
                 _redis_note_empty(COOLDOWN_S)
+                # Also reset the session here, not just in the except branch
+                # below. Confirmed in production logs: a stale-crumb failure
+                # ("HTTP Error 401 ... Invalid Crumb") does NOT reach us as
+                # a raised exception -- yfinance catches it internally,
+                # prints that line itself, logs its own "No data found,
+                # symbol may be delisted", and returns an empty DataFrame.
+                # So this branch, not the except block, is what actually
+                # runs on a crumb failure; resetting only in except left
+                # this path retrying the same broken session 3 times before
+                # giving up, which is exactly the failure mode this was
+                # supposed to fix. Cheap even for a genuinely delisted
+                # symbol -- one extra cookie/crumb round trip, still empty
+                # after, same end result -- so no need to try to tell the
+                # two cases apart here.
+                _reset_session()
                 continue
             _redis_note_success()  # breaks any accumulating empty streak
             return result
@@ -335,9 +366,25 @@ def _with_retry(fn, *args, **kwargs):
             last_exc = exc
             msg = str(exc).lower()
             is_rate = any(x in msg for x in ("429", "rate", "too many", "forbidden", "403"))
-            if not is_rate:
-                # Non-rate-limit error — don't keep retrying
+            # Distinct from is_rate: Yahoo returning "HTTP Error 401 ...
+            # Invalid Crumb" / "Unauthorized" isn't a rate-limit response,
+            # it's the session's cookie+crumb handshake having gone stale
+            # (session aged out, or the same IP-level blocking that causes
+            # 429s elsewhere manifesting as a crumb rejection instead).
+            # None of "429"/"rate"/"too many"/"forbidden"/"403" appear in
+            # that message, so it used to fall straight through to `raise`
+            # below with no retry, no cooldown, and -- worse -- no way to
+            # ever recover, since the broken session stayed cached in
+            # _thread_local for the rest of the process's life.
+            is_auth = any(x in msg for x in ("crumb", "unauthorized", "401"))
+            if not is_rate and not is_auth:
+                # Neither shape — a real, non-recoverable error. Don't keep retrying
                 raise
+            if is_auth:
+                logger.warning("yf_ratelimit: auth/crumb error on attempt %d — "
+                                "resetting session: %s", attempt + 1, exc)
+                _reset_session()
+                continue
             logger.warning("yf_ratelimit: rate-limit hit on attempt %d: %s", attempt + 1, exc)
             _trigger_cooldown()  # a REAL 429 always pauses everyone immediately --
                                   # no streak needed, this one's unambiguous
@@ -363,15 +410,23 @@ class _CachedTicker:
 
     def __init__(self, symbol: str):
         self._symbol  = symbol
-        self._yf_obj  = None
-        self._yf_lock = threading.Lock()
+        self._yf_obj      = None
+        self._yf_obj_sess = None  # the session object _yf_obj was built with
+        self._yf_lock     = threading.Lock()
 
     # -- lazy yf.Ticker construction -----------------------------------------
     def _get_yf(self) -> yf.Ticker:
         with self._yf_lock:
-            if self._yf_obj is None:
-                sess = _make_session()
+            sess = _make_session()
+            # Rebuild if this is the first call OR _reset_session() has
+            # since swapped in a fresh session for this thread (crumb
+            # recovery) -- otherwise this cached yf.Ticker would keep
+            # using the old, invalidated session forever, and
+            # _reset_session() would silently do nothing for every call
+            # that goes through safe_ticker() rather than safe_download().
+            if self._yf_obj is None or sess is not self._yf_obj_sess:
                 self._yf_obj = yf.Ticker(self._symbol, session=sess)
+                self._yf_obj_sess = sess
         return self._yf_obj
 
     # -- generic cached property fetch ----------------------------------------
