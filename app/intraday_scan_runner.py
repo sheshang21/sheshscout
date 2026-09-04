@@ -71,13 +71,18 @@ def get_debug_log(job_id: str) -> list[str]:
     return list(_DEBUG_LOGS.get(job_id, ()))
 
 
-def run_intraday_scan_job(job_id: str, symbols: list[str], direction: str, params: dict) -> None:
+def run_intraday_scan_job(job_id: str, symbols: list[str], direction: str, params: dict,
+                           data_source: str = "yfinance") -> None:
     """Fetch + analyze every symbol in `symbols` for intraday long/short
     setups, writing results as they complete. `direction` and `params` are
     passed explicitly by the caller (rather than re-derived from the job
     row) so resume uses exactly the same direction/params the original
     scan started with -- see app/routers/intraday_scans.py's resume
-    endpoint."""
+    endpoint. `data_source` ("yfinance" | "nse" | "auto") is likewise
+    passed through explicitly so a resumed scan keeps using whichever
+    source the original scan was started with -- see
+    core.intraday_scanner.fetch_intraday_data()'s docstring for what each
+    value does."""
     db = SessionLocal()
     try:
         job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
@@ -92,7 +97,7 @@ def run_intraday_scan_job(job_id: str, symbols: list[str], direction: str, param
         _log(job_id, f"Started ({direction}) -- {len(symbols)} symbols queued, {MAX_WORKERS} workers")
 
         def _scan_one(symbol: str):
-            data = fetch_intraday_data(symbol)
+            data = fetch_intraday_data(symbol, data_source=data_source)
             if data is None:
                 return symbol, "fetch_failed", None
             result = analyze_intraday(data, symbol, direction, params)

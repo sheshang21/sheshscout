@@ -52,11 +52,12 @@ def dispatch_positional_scan(background_tasks: BackgroundTasks, job_id: str, sym
 
 
 def dispatch_intraday_scan(
-    background_tasks: BackgroundTasks, job_id: str, symbols: list[str], direction: str, params: dict
+    background_tasks: BackgroundTasks, job_id: str, symbols: list[str], direction: str, params: dict,
+    data_source: str = "yfinance",
 ) -> None:
     if SCAN_USE_CELERY:
         from .tasks import run_intraday_scan_job_task
-        run_intraday_scan_job_task.delay(job_id, symbols, direction, params)
+        run_intraday_scan_job_task.delay(job_id, symbols, direction, params, data_source)
     else:
         from .intraday_scan_runner import run_intraday_scan_job
-        background_tasks.add_task(run_intraday_scan_job, job_id, symbols, direction, params)
+        background_tasks.add_task(run_intraday_scan_job, job_id, symbols, direction, params, data_source)

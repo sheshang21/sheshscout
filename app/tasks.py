@@ -17,5 +17,6 @@ def run_scan_job_task(job_id: str, symbols: list[str]) -> None:
 
 
 @celery_app.task(name="scans.run_intraday_scan_job")
-def run_intraday_scan_job_task(job_id: str, symbols: list[str], direction: str, params: dict) -> None:
-    run_intraday_scan_job(job_id, symbols, direction, params)
+def run_intraday_scan_job_task(job_id: str, symbols: list[str], direction: str, params: dict,
+                                data_source: str = "yfinance") -> None:
+    run_intraday_scan_job(job_id, symbols, direction, params, data_source)
