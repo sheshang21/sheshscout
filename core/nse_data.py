@@ -1,6 +1,21 @@
 """
 core/nse_data.py — Direct NSE data source for intraday scanning. NO yfinance.
 ================================================================================
+IMPORTANT CAVEAT, READ FIRST: NSE's website blocks traffic from datacenter/
+cloud IP ranges (Render, AWS, GCP, ...) at the network/WAF (Akamai
+bot-manager) level, independent of cookies, headers, or request shape. If
+this module is failing with persistent 403s on quote-equity and/or
+"Expecting value: line 1 column 1" JSON-decode errors on historical data
+(a 200 status with an HTML challenge page instead of JSON) even after
+session refreshes, that IS the block -- there is no cookie dance that
+routes around it. This module still has a circuit breaker (see
+NSE_BREAKER_THRESHOLD below) so a block fails fast instead of retrying
+every symbol into the same wall, but it cannot make a blocked IP work.
+Reliable NSE-direct access from a cloud host generally needs either a
+residential/rotating proxy in front of these calls, or switching to a
+real market-data vendor with an API key (Zerodha Kite Connect, Upstox,
+Angel One, Truedata, etc.) instead of scraping the public NSE site.
+
 Scope (deliberately narrow): this module ONLY covers what
 core/intraday_scanner.py needs -- live quote + today's price series + last
 few days' daily OHLCV for NSE-listed symbols. It does NOT attempt to
@@ -131,6 +146,55 @@ def _throttle():
         _last_request_ts = time.time()
 
 
+# ── circuit breaker ──────────────────────────────────────────────────────
+# If NSE is blocking this host at the network/WAF level (very common for
+# datacenter/cloud IPs -- Render, AWS, GCP, etc. -- independent of cookies
+# or request shape), retrying per-symbol just hammers a closed door for
+# the rest of the scan: every symbol pays 3 attempts x session-refresh x
+# backoff before giving up, for a block a session refresh can never fix.
+# Once we've seen enough consecutive failures to conclude this, stop
+# calling NSE at all for a cooldown window and fail fast -- callers using
+# data_source="auto" fall back to yfinance immediately instead of waiting
+# out a doomed retry ladder every single time; callers using "nse" get a
+# clean, fast None instead of the same wall of retries per symbol.
+NSE_BREAKER_THRESHOLD = _env_int("NSE_BREAKER_THRESHOLD", 5)  # consecutive
+                          # failures (across ALL symbols, this process)
+                          # before tripping
+NSE_BREAKER_COOLDOWN_S = _env_float("NSE_BREAKER_COOLDOWN_S", 120.0)
+
+_breaker_lock = threading.Lock()
+_consecutive_failures = 0
+_breaker_open_until = 0.0
+
+
+def _breaker_is_open() -> bool:
+    with _breaker_lock:
+        return time.time() < _breaker_open_until
+
+
+def _breaker_note_failure():
+    global _consecutive_failures, _breaker_open_until
+    with _breaker_lock:
+        _consecutive_failures += 1
+        if _consecutive_failures >= NSE_BREAKER_THRESHOLD:
+            _breaker_open_until = time.time() + NSE_BREAKER_COOLDOWN_S
+            logger.warning(
+                "nse_data: %d consecutive failures -- this almost always means NSE is "
+                "blocking this server's IP at the network/WAF level (common for "
+                "datacenter hosts like Render/AWS/GCP), NOT a stale-cookie problem a "
+                "retry can fix. Stopping NSE calls for %.0fs so the rest of this scan "
+                "doesn't hammer a closed door one symbol at a time.",
+                _consecutive_failures, NSE_BREAKER_COOLDOWN_S,
+            )
+
+
+def _breaker_note_success():
+    global _consecutive_failures, _breaker_open_until
+    with _breaker_lock:
+        _consecutive_failures = 0
+        _breaker_open_until = 0.0
+
+
 def _get_session(force: bool = False) -> requests.Session:
     global _session, _session_ts
     with _session_lock:
@@ -141,7 +205,11 @@ def _get_session(force: bool = False) -> requests.Session:
         sess.headers.update(_HEADERS)
         # Homepage visit is what actually sets the cookies the /api/* calls
         # need -- hitting /api/quote-equity cold, with no prior cookie,
-        # reliably 401s.
+        # reliably 401s. NOTE: if NSE is blocking this IP at the WAF level
+        # (see _breaker_note_failure above), this homepage visit itself may
+        # come back as a challenge page rather than a real 200 -- refreshing
+        # the session doesn't route around an IP-level block, only a truly
+        # stale/expired cookie on an otherwise-allowed IP.
         sess.get(BASE_URL, timeout=NSE_REQUEST_TIMEOUT_S)
         _session = sess
         _session_ts = time.time()
@@ -149,8 +217,23 @@ def _get_session(force: bool = False) -> requests.Session:
 
 
 def _get(path: str, params: dict) -> dict | list | None:
-    """GET an NSE /api/ endpoint with throttle + retry + one forced
-    session refresh if the first attempt looks like a stale-cookie 401."""
+    """GET an NSE /api/ endpoint with throttle + retry.
+
+    Distinguishes two failure shapes that used to be handled identically
+    (both just "retry with a fresh session"), because only one of them
+    actually responds to that:
+      - HTTP 401/403: could genuinely be a stale/expired cookie on an
+        otherwise-allowed IP -- worth one session refresh + retry.
+      - Non-JSON 200 response (a WAF/bot-check challenge page returned
+        WITH a 200 status): a session refresh does nothing for this, it's
+        an IP-level decision, not a cookie one. Retrying still happens
+        (transient WAF checks do sometimes clear), but does NOT force a
+        session refresh each time, and counts toward the circuit breaker
+        so a persistent block doesn't repeat this dance for every symbol.
+    """
+    if _breaker_is_open():
+        return None
+
     last_exc = None
     for attempt in range(NSE_MAX_RETRIES):
         _throttle()
@@ -161,19 +244,34 @@ def _get(path: str, params: dict) -> dict | list | None:
             sess = _get_session(force=(attempt > 0))
             resp = sess.get(f"{BASE_URL}{path}", params=params,
                              timeout=NSE_REQUEST_TIMEOUT_S)
-            if resp.status_code == 401 or resp.status_code == 403:
-                last_exc = RuntimeError(f"NSE {resp.status_code} (stale cookie?)")
+            if resp.status_code in (401, 403):
+                last_exc = RuntimeError(f"NSE {resp.status_code}")
                 logger.warning("nse_data: %s on %s, refreshing session (attempt %d/%d)",
                                 resp.status_code, path, attempt + 1, NSE_MAX_RETRIES)
                 continue
             resp.raise_for_status()
-            return resp.json()
+            try:
+                result = resp.json()
+            except ValueError:
+                # 200 status but not JSON -- almost always a WAF challenge
+                # page, not a data problem. Don't force a session refresh
+                # for this: refreshing cookies doesn't get past an IP-level
+                # block, it just burns another handshake round-trip.
+                last_exc = RuntimeError("NSE returned a non-JSON 200 response "
+                                         "(likely a bot-check/challenge page, not a data issue)")
+                logger.warning("nse_data: non-JSON response from %s (attempt %d/%d) -- "
+                                "likely blocked at the network level, not retrying with a "
+                                "fresh session", path, attempt + 1, NSE_MAX_RETRIES)
+                continue
+            _breaker_note_success()
+            return result
         except Exception as exc:  # noqa: BLE001 -- broad on purpose, this is a best-effort feed
             last_exc = exc
             logger.warning("nse_data: request failed on %s (attempt %d/%d): %s",
                             path, attempt + 1, NSE_MAX_RETRIES, exc)
     logger.warning("nse_data: giving up on %s after %d attempts: %s",
                     path, NSE_MAX_RETRIES, last_exc)
+    _breaker_note_failure()
     return None
 
 
