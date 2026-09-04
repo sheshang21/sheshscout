@@ -111,6 +111,10 @@ def start_intraday_scan(
             "exchanges": payload.exchanges,
             "range": payload.range,
             "symbols": symbols if payload.symbols else None,
+            # Stored here (not a dedicated column) so resume_intraday_scan
+            # below can pick the same data_source back up without a schema
+            # migration -- universe is already free-form JSONB.
+            "data_source": payload.data_source,
         },
         thresholds=params,
         min_market_cap=0,
@@ -120,7 +124,7 @@ def start_intraday_scan(
     db.commit()
     db.refresh(job)
 
-    dispatch_intraday_scan(background_tasks, str(job.id), symbols, payload.direction, params)
+    dispatch_intraday_scan(background_tasks, str(job.id), symbols, payload.direction, params, payload.data_source)
 
     return job
 
@@ -209,8 +213,12 @@ def resume_intraday_scan(
 
     direction = _DIRECTION_BY_SCAN_TYPE[job.scan_type]
     params = job.thresholds or DEFAULT_PARAMS[direction]
+    # Same source the original scan used -- defaults to "yfinance" for jobs
+    # created before this option existed (their universe blob has no
+    # data_source key at all).
+    data_source = (job.universe or {}).get("data_source", "yfinance")
 
-    dispatch_intraday_scan(background_tasks, str(job.id), remaining, direction, params)
+    dispatch_intraday_scan(background_tasks, str(job.id), remaining, direction, params, data_source)
 
     return job
 
